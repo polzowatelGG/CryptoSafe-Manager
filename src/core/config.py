@@ -3,9 +3,13 @@ import threading
 class StateManager:
     def __init__(self):
         self.session_locked = False # при создании новой сессии она будет разблокирована 
+        
         self.clipboard = None # содержимое буффера обмена 
         self.clipboard_timer = None # таймер очистки буффера по умолчанию 
-        self.clipboard_timeout = 90 # хранение данных в буффере 90 сек. 
+        self.clipboard_timeout = 67 # хранение данных в буффере 67 сек. 
+        
+        self.inactivity_timer = None # таймер неактивности 
+        self.inactivity_timeout = self.clipboard_timeout*5 # через 335 сек вкл 
         
     def lock(self):
         self.session_locked = True 
@@ -35,5 +39,8 @@ class StateManager:
         self.clipboard_timer = threading.Timer(self.clipboard_timeout, self.clear_clipboard)
         self.clipboard_timer.start() # создаём новый таймер для очистки
         
-    
-    #first try
+    def reset_inactivity_timer(self):
+        if self.inactivity_timer:
+            self.inactivity_timer.cancel()
+        self.inactivity_timer = threading.Timer(self.inactivity_timeout, self.lock) # автоблокировка от бездействия пользователя 
+        
