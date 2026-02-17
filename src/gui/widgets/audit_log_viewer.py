@@ -1,28 +1,31 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QLabel
+# src/gui/widgets/audit_log_viewer.py
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QLabel
 
 
 class AuditLogViewer(QWidget):
-    """
-    Окно просмотра логов действий пользователя.
+    def __init__(self):
+        super().__init__()
 
-    В будущем будет зависеть от:
-    - events.py
-    - audit logger
-    - database
-    """
+        layout = QVBoxLayout()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+        self.info_label = QLabel("Audit Log (заглушка)")
+        layout.addWidget(self.info_label)
 
-        layout = QVBoxLayout(self)
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Время", "Событие", "Пользователь"])
+        layout.addWidget(self.table)
 
-        title = QLabel("Audit Logs")
-        self.logs = QTextEdit()
-        self.logs.setReadOnly(True)
+        # Тестовые данные
+        test_data = [
+            ("12:00", "Вход выполнен", "admin"),
+            ("12:05", "Добавлена запись", "admin"),
+        ]
+        self.table.setRowCount(len(test_data))
+        for row, (time, event, user) in enumerate(test_data):
+            self.table.setItem(row, 0, QTableWidgetItem(time))
+            self.table.setItem(row, 1, QTableWidgetItem(event))
+            self.table.setItem(row, 2, QTableWidgetItem(user))
 
-        # тестовые записи
-        self.logs.append("System started")
-        self.logs.append("User authenticated")
+        self.setLayout(layout)
 
-        layout.addWidget(title)
-        layout.addWidget(self.logs)
