@@ -1,60 +1,37 @@
-from PyQt6.QtWidgets import QWidget, QHBoxLayout, QLineEdit, QPushButton
+# src/gui/widgets/password_entry.py
+from PyQt6.QtWidgets import QWidget, QLineEdit, QPushButton, QHBoxLayout
 
 
 class PasswordEntry(QWidget):
-    """
-    Переиспользуемый виджет поля пароля.
+    def __init__(self, placeholder="Введите пароль"):
+        super().__init__()
 
-    Используется:
-    - в мастере создания мастер-пароля
-    - в формах входа
-    - при изменении пароля
+        self.line_edit = QLineEdit()
+        self.line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+        self.line_edit.setPlaceholderText(placeholder)
 
-    Зависимости:
-    - только PyQt6
-    """
+        self.toggle_btn = QPushButton("Показать")
+        self.toggle_btn.setCheckable(True)
+        self.toggle_btn.toggled.connect(self._toggle_password)
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
-
-        # горизонтальный layout
-        layout = QHBoxLayout(self)
+        layout = QHBoxLayout()
+        layout.addWidget(self.line_edit)
+        layout.addWidget(self.toggle_btn)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # поле ввода
-        self.edit = QLineEdit()
+        self.setLayout(layout)
 
-        # режим маскировки текста
-        self.edit.setEchoMode(QLineEdit.EchoMode.Password)
-
-        # кнопка показа/скрытия
-        self.toggle_btn = QPushButton("👁")
-        self.toggle_btn.setCheckable(True)
-        self.toggle_btn.setFixedWidth(35)
-
-        # сигнал нажатия
-        self.toggle_btn.clicked.connect(self.toggle_visibility)
-
-        layout.addWidget(self.edit)
-        layout.addWidget(self.toggle_btn)
-
-    def toggle_visibility(self):
-        """
-        Переключает режим отображения пароля
-        """
-        if self.toggle_btn.isChecked():
-            self.edit.setEchoMode(QLineEdit.EchoMode.Normal)
+    def _toggle_password(self, checked):
+        if checked:
+            self.line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.toggle_btn.setText("Скрыть")
         else:
-            self.edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.line_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self.toggle_btn.setText("Показать")
 
     def text(self):
-        """
-        Получить введённый пароль
-        """
-        return self.edit.text()
+        return self.line_edit.text()
 
-    def setText(self, value):
-        """
-        Установить текст извне
-        """
-        self.edit.setText(value)
+    def clear(self):
+        self.line_edit.clear()
+
