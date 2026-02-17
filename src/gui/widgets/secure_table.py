@@ -21,3 +21,4 @@ class SecureTable(QTableWidget):
     def clear_entries(self):
         """Очищает таблицу"""
         self.setRowCount(0)
+
