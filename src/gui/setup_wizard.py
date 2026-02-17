@@ -95,3 +95,4 @@ class SetupWizard(QDialog):
             f"Мастер-пароль установлен\nБаза: {self.db_path}\n(Шифрование пока заглушка)"
         )
         self.accept()
+
