@@ -113,3 +113,4 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         dialog = SettingsDialog()
         dialog.exec()
+
