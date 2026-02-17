@@ -1,143 +1,108 @@
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QTabWidget,
-    QWidget, QLabel, QSpinBox,
-    QComboBox, QCheckBox,
-    QPushButton, QHBoxLayout
+    QDialog,
+    QVBoxLayout,
+    QTabWidget,
+    QWidget,
+    QFormLayout,
+    QSpinBox,
+    QCheckBox,
+    QComboBox,
+    QPushButton,
+    QHBoxLayout,
+    QLabel,
 )
 
 
-class SecurityTab(QWidget):
-    """
-    Настройки безопасности
-    """
-
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout(self)
-
-        self.clipboard = QSpinBox()
-        self.clipboard.setRange(1, 300)
-        self.clipboard.setValue(30)
-
-        self.autolock = QSpinBox()
-        self.autolock.setRange(1, 120)
-        self.autolock.setValue(5)
-
-        layout.addWidget(QLabel("Clipboard timeout"))
-        layout.addWidget(self.clipboard)
-
-        layout.addWidget(QLabel("Auto lock timeout"))
-        layout.addWidget(self.autolock)
-
-        layout.addStretch()
-
-    def get(self):
-        return {
-            "clipboard": self.clipboard.value(),
-            "autolock": self.autolock.value()
-        }
-
-
-class AppearanceTab(QWidget):
-    """
-    Внешний вид
-    """
-
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout(self)
-
-        self.theme = QComboBox()
-        self.theme.addItems(["System", "Light", "Dark"])
-
-        self.lang = QComboBox()
-        self.lang.addItems(["English", "Russian", "German"])
-
-        layout.addWidget(QLabel("Theme"))
-        layout.addWidget(self.theme)
-
-        layout.addWidget(QLabel("Language"))
-        layout.addWidget(self.lang)
-
-        layout.addStretch()
-
-    def get(self):
-        return {
-            "theme": self.theme.currentText(),
-            "language": self.lang.currentText()
-        }
-
-
-class AdvancedTab(QWidget):
-    """
-    Дополнительные параметры
-    """
-
-    def __init__(self):
-        super().__init__()
-        layout = QVBoxLayout(self)
-
-        self.backup = QCheckBox("Enable backups")
-        self.export = QCheckBox("Allow export")
-
-        self.backup.setChecked(True)
-        self.export.setChecked(True)
-
-        layout.addWidget(self.backup)
-        layout.addWidget(self.export)
-        layout.addStretch()
-
-    def get(self):
-        return {
-            "backup": self.backup.isChecked(),
-            "export": self.export.isChecked()
-        }
-
-
 class SettingsDialog(QDialog):
-    """
-    Главное окно настроек
-    """
+    def __init__(self):
+        super().__init__()
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+        self.setWindowTitle("Настройки")
+        self.resize(500, 400)
 
-        self.setWindowTitle("Settings")
+        self._init_ui()
 
-        layout = QVBoxLayout(self)
+    def _init_ui(self):
+        layout = QVBoxLayout()
 
         self.tabs = QTabWidget()
-
-        self.security = SecurityTab()
-        self.appearance = AppearanceTab()
-        self.advanced = AdvancedTab()
-
-        self.tabs.addTab(self.security, "Security")
-        self.tabs.addTab(self.appearance, "Appearance")
-        self.tabs.addTab(self.advanced, "Advanced")
+        self.tabs.addTab(self._create_security_tab(), "Безопасность")
+        self.tabs.addTab(self._create_appearance_tab(), "Внешний вид")
+        self.tabs.addTab(self._create_advanced_tab(), "Дополнительно")
 
         layout.addWidget(self.tabs)
 
-        buttons = QHBoxLayout()
-        buttons.addStretch()
+        # Кнопки
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
 
-        save = QPushButton("Save")
-        cancel = QPushButton("Cancel")
+        self.save_btn = QPushButton("Сохранить")
+        self.save_btn.clicked.connect(self.accept)
 
-        save.clicked.connect(self.accept)
-        cancel.clicked.connect(self.reject)
+        self.cancel_btn = QPushButton("Отмена")
+        self.cancel_btn.clicked.connect(self.reject)
 
-        buttons.addWidget(save)
-        buttons.addWidget(cancel)
+        btn_layout.addWidget(self.save_btn)
+        btn_layout.addWidget(self.cancel_btn)
 
-        layout.addLayout(buttons)
+        layout.addLayout(btn_layout)
 
-    def get_settings(self):
-        """
-        Сбор всех настроек
-        """
-        return {
-            "security": self.security.get(),
-            "appearance": self.appearance.get(),
-            "advanced": self.advanced.get()
-        }
+        self.setLayout(layout)
+
+    # ------------------------
+    # Вкладка Безопасность
+    # ------------------------
+    def _create_security_tab(self):
+        tab = QWidget()
+        layout = QFormLayout()
+
+        self.clipboard_timeout = QSpinBox()
+        self.clipboard_timeout.setRange(5, 300)
+        self.clipboard_timeout.setValue(30)
+        self.clipboard_timeout.setSuffix(" сек")
+
+        self.auto_lock_checkbox = QCheckBox("Включить авто-блокировку")
+
+        layout.addRow("Таймаут буфера обмена:", self.clipboard_timeout)
+        layout.addRow("", self.auto_lock_checkbox)
+
+        tab.setLayout(layout)
+        return tab
+
+    # ------------------------
+    # Вкладка Внешний вид
+    # ------------------------
+    def _create_appearance_tab(self):
+        tab = QWidget()
+        layout = QFormLayout()
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Светлая", "Тёмная", "Системная"])
+
+        self.language_combo = QComboBox()
+        self.language_combo.addItems(["Русский", "English"])
+
+        layout.addRow("Тема:", self.theme_combo)
+        layout.addRow("Язык:", self.language_combo)
+
+        tab.setLayout(layout)
+        return tab
+
+    # ------------------------
+    # Вкладка Дополнительно
+    # ------------------------
+    def _create_advanced_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout()
+
+        self.backup_btn = QPushButton("Создать резервную копию")
+        self.export_btn = QPushButton("Экспорт данных")
+
+        layout.addWidget(QLabel("Резервное копирование и экспорт:"))
+        layout.addWidget(self.backup_btn)
+        layout.addWidget(self.export_btn)
+        layout.addStretch()
+
+        tab.setLayout(layout)
+        return tab
+
