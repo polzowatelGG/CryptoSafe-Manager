@@ -4,9 +4,6 @@ from PyQt6.QtWidgets import QApplication
 from gui.main_window import MainWindow
 from gui.setup_wizard import SetupWizard
 
-
-
-
 def main():
     app = QApplication(sys.argv)
 
@@ -23,7 +20,6 @@ def main():
     window.show()
 
     sys.exit(app.exec())
-
 
 if __name__ == "__main__":
     main()
