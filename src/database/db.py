@@ -15,27 +15,18 @@ class DatabaseHelper:
         self.connection = sqlite3.connect(self.db_path)
         self.cursor = self.connection.cursor()
 
-    def initialize_db(self):                    # Создание таблицы для хранения криптовалютных данных (пример)
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS cryptos (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                symbol TEXT NOT NULL,
-                price REAL NOT NULL,
-                last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        self.connection.commit()
+    def initialize_db(self):                    # Создание таблицы для хранения криптовалютных данных (пример) /// переделать
+        pass
 
     def insert_crypto(self, name: str, symbol: str, price: float):
         self.cursor.execute('''
-            INSERT INTO cryptos (name, symbol, price) VALUES (?, ?, ?)
-        ''', (name, symbol, price))
+            INSERT INTO cryptos (name, symbol, price) VALUES (?, ?, ?) 
+        ''', (name, symbol, price)) #переделать 
         self.connection.commit()
 
     def get_all_cryptos(self):
         self.cursor.execute('SELECT * FROM cryptos')
-        return self.cursor.fetchall()
+        return self.cursor.fetchall() #переделать 
 
     def close(self):
         if self.connection:
