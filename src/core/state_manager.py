@@ -13,11 +13,11 @@ class StateManager:
         
     def lock(self):
         self.session_locked = True
-        print('Сессия заблокирована')  # блокировка сессии
+        print('Сессия заблокирована')  # блокировка сессии /// удалить
         
     def unlock(self):
         self.session_locked = False
-        print('Сессия разблокирована')  # разблокировка сессии
+        print('Сессия разблокирована')  # разблокировка сессии ///удалить
         
     def is_locked(self):
         return self.session_locked
