@@ -1,0 +1,13 @@
+{
+    "database_path": "src/database/crypto.db",
+    "encryption": {
+        "method": "AES256Placeholder",
+        "key_salt": null
+    },
+    "preferences": {
+        "clipboard_timeout": 67,
+        "auto_lock": true,
+        "theme": "system",
+        "language": "ru"
+    }
+}

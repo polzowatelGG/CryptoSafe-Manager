@@ -12,9 +12,6 @@ from gui.widgets.audit_log_viewer import AuditLogViewer
 from gui.widgets.secure_table import SecureTable
 from gui.settings_dialog import SettingsDialog
 
-
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -113,4 +110,3 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         dialog = SettingsDialog()
         dialog.exec()
-
