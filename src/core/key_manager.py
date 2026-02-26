@@ -3,14 +3,9 @@ import ctypes
 import secrets
 from typing import Tuple, Optional
 
-
 class KeyManager:
     def derive_key(self, password: str, salt: Optional[bytes]) -> Tuple[bytes, bytes]:
-        """Derive a 32-byte key from password and salt.
 
-        If `salt` is None, a new random 16-byte salt is generated.
-        Returns a tuple `(key, salt)` where `salt` is the bytes used.
-        """
         password_bytes = password.encode('utf-8')
         used_salt = secrets.token_bytes(16) if salt is None else salt
         combo = password_bytes + used_salt

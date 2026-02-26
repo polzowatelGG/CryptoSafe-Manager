@@ -1,16 +1,15 @@
 from core.crypto.abstract import EncryptionService
 
-class AES256Placeholder(EncryptionService):
-    """Placeholder service; encrypt/decrypt with simple XOR."""
+class AES256Placeholder(EncryptionService): 
+    def xor_bytes(self, data: bytes, key: bytes) -> bytes: # функция для выполнения операции XOR между данными и ключом / заглушка до спринта 3
 
-    def encrypt(self, data: bytes, key: bytes) -> bytes:  # зашифровать данные с помощью ключа
-        if not key:
-            raise ValueError("key must not be empty")
-        # XOR each byte of data with corresponding byte of key (cycled)
-        return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+        result = bytearray() # преобразовать данные в bytearray для возможности изменения
+        for i in range(len(data)):
+            result.append(data[i] ^ key[i % len(key)]) # выполнить XOR между каждым байтом данных и соответствующим байтом ключа (циклически)
+        return bytes(result) 
+    
+    def encrypt(self, data: bytes, key: bytes) -> bytes: #зашифровать данные с помощью ключа
+        return self.xor_bytes(data, key) 
 
-    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes:  # расшифровать данные с помощью ключа
-        if not key:
-            raise ValueError("key must not be empty")
-        # XOR is its own inverse
-        return bytes(c ^ key[i % len(key)] for i, c in enumerate(ciphertext))
+    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes: #расшифровать данные с помощью ключа
+        return self.xor_bytes(ciphertext, key) 

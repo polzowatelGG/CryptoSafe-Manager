@@ -1,26 +1,26 @@
 import threading
 
-class StateManager:
-    def __init__(self):
-        self.session_locked = False  # при создании новой сессии она будет разблокирована 
-        
-        self.clipboard = None  # содержимое буфера обмена
-        self.clipboard_timer = None  # объект таймера очистки буфера
-        self.clipboard_timeout = 67  # хранение данных в буфере 67 сек
-        
-        self.inactivity_timer = None  # таймер неактивности пользователя
-        self.inactivity_timeout = self.clipboard_timeout * 5  # через 335 сек включается авто-блокировка
-        
+class StateManager: 
+    def __init__(self, config):
+        self.config = config
+        self.session_locked = False
+        self.clipboard = None
+        self.clipboard_timer = None
+        self.inactivity_timer = None
+
+        # берём настройки из config
+        self.clipboard_timeout = self.config.get_preference("clipboard_timeout")
+        auto_lock = self.config.get_preference("auto_lock")
+        self.inactivity_timeout = self.clipboard_timeout * 5 if auto_lock else None
+
     def lock(self):
-        self.session_locked = True
-        print('Сессия заблокирована')  # блокировка сессии /// удалить
+        self.session_locked = True  # блокируем сессию
         
     def unlock(self):
-        self.session_locked = False
-        print('Сессия разблокирована')  # разблокировка сессии ///удалить
+        self.session_locked = False # разблокируем сессию
         
     def is_locked(self):
-        return self.session_locked
+        return self.session_locked # возвращаем статус блокировки сессии
     
     def set_clipboard(self, data):
         self.clipboard = data  # обновляем буфер обмена
