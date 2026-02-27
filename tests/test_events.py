@@ -1,17 +1,19 @@
-from core import events
+from core.events import EventBus
 
-def test_subscribe_and_publish():
-    called = {"ok": False}
+
+def test_eventbus_subscribe_publish_unsubscribe():
+    bus = EventBus()
+    called = {}
 
     def handler(**kwargs):
-        called["ok"] = True
-        called["data"] = kwargs
+        called.update(kwargs)
 
-    events.subscribe("TestEvent", handler)
-    events.publish("TestEvent", a=1, b=2)
+    bus.subscribe("ev", handler)
+    bus.publish("ev", x=1)
+    assert called.get("x") == 1
 
-    assert called["ok"] is True
-    assert called.get("data", {}).get("a") == 1
-
-    # очистим подписку
-    events.unsubscribe("TestEvent", handler)
+    # тест отписки
+    bus.unsubscribe("ev", handler)
+    called.clear()
+    bus.publish("ev", x=2)
+    assert called == {}
