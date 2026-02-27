@@ -4,7 +4,6 @@ from queue import Queue, Empty
 from contextlib import contextmanager
 from typing import Callable, List
 
-
 class DatabasePool:
 
     def __init__(self, db_path: str, size: int = 4):
@@ -22,7 +21,7 @@ class DatabasePool:
             self._migration_1_initial_schema,
         ]
 
-    def _new_connection(self) -> sqlite3.Connection:
+    def new_connection(self) -> sqlite3.Connection:
         # Создаёт новое sqlite3-соединение (без проверки потока)
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
@@ -31,7 +30,7 @@ class DatabasePool:
     def _fill_pool(self) -> None:
         # Наполняем пул стартовыми соединениями
         for _ in range(self.size):
-            self._pool.put(self._new_connection())
+            self._pool.put(self.new_connection())
 
     @contextmanager
     def connection(self) -> sqlite3.Connection:
@@ -41,7 +40,7 @@ class DatabasePool:
             conn = self._pool.get_nowait()
             temporary = False
         except Empty:
-            conn = self._new_connection()
+            conn = self.new_connection()
             temporary = True
 
         try:
