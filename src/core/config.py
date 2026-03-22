@@ -12,7 +12,7 @@ class ConfigManager:
             "key_salt": None
         },
         
-        "preferences": { #
+        "preferences": { 
             "clipboard_timeout": 67,  
             "auto_lock": True,
             "theme": "system",

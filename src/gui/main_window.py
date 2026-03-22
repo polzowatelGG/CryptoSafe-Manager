@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
         self.login_status = "Не выполнен вход"
-        self.clipboard_status = "Буфер: --"
+        self.clipboard_status = "Буфер: ---"
         self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
         self.setStatusBar(self.status_bar)
 

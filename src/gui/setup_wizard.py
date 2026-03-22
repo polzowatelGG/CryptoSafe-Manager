@@ -74,7 +74,7 @@ class SetupWizard(QDialog):
     # ------------------------
     def _finish_setup(self):
         pwd = self.password_entry.text()
-        pwd_confirm = self.password_confirm_entry.text()
+        pwd_confirm = self.password_confirm_entry.text() # получаем текст из обоих полей для сравнения
 
         if not pwd:
             QMessageBox.warning(self, "Ошибка", "Мастер-пароль не может быть пустым")

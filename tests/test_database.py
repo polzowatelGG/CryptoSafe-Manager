@@ -1,8 +1,7 @@
 import sqlite3
 from database.db import DatabasePool
 
-
-def test_new_connection_basic(tmp_path):
+def test_new_connection_basic(tmp_path): 
     db_file = tmp_path / "test.db"
     pool = DatabasePool(str(db_file))
 

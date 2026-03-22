@@ -1,8 +1,3 @@
-"""Простой pub/sub модуль для приложения.
-
-Предоставляет функции для подписки/отписки и публикации событий,
-а также заглушку `AuditLogger` для записи тестовых логов.
-"""
 
 from datetime import datetime
 from pathlib import Path
@@ -57,7 +52,6 @@ class EventBus:
 # Глобальная шина
 _bus = EventBus()
 
-
 def subscribe(event: str, handler: Callable[..., None]) -> None:
     _bus.subscribe(event, handler)
 
@@ -79,13 +73,13 @@ class AuditLogger:
         self.path.parent.mkdir(parents=True, exist_ok=True)  # создаём папку для логов
 
         # Подписываемся на события
-        subscribe(ENTRY_ADDED, self._on_entry_added)
-        subscribe(ENTRY_UPDATED, self._on_entry_updated)
-        subscribe(ENTRY_DELETED, self._on_entry_deleted)
-        subscribe(USER_LOGGED_IN, self._on_user_logged_in)
-        subscribe(USER_LOGGED_OUT, self._on_user_logged_out)
-        subscribe(CLIPBOARD_COPIED, self._on_clipboard_copied)
-        subscribe(CLIPBOARD_CLEARED, self._on_clipboard_cleared)
+        subscribe(ENTRY_ADDED, self.on_entry_added)
+        subscribe(ENTRY_UPDATED, self.on_entry_updated)
+        subscribe(ENTRY_DELETED, self.on_entry_deleted)
+        subscribe(USER_LOGGED_IN, self.on_user_logged_in)
+        subscribe(USER_LOGGED_OUT, self.on_user_logged_out)
+        subscribe(CLIPBOARD_COPIED, self.on_clipboard_copied)
+        subscribe(CLIPBOARD_CLEARED, self.on_clipboard_cleared)
 
     def _write(self, msg: str) -> None:
         # Дописывает строку в файл лога с UTC-временем

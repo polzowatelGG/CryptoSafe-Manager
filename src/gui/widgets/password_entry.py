@@ -21,7 +21,7 @@ class PasswordEntry(QWidget):
 
         self.setLayout(layout)
 
-    def _toggle_password(self, checked):
+    def _toggle_password(self, checked): # переключает режим отображения пароля и текст кнопки в зависимости от состояния
         if checked:
             self.line_edit.setEchoMode(QLineEdit.EchoMode.Normal)
             self.toggle_btn.setText("Скрыть")
