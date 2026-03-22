@@ -1,16 +1,10 @@
-"""Репозитории и модели для работы с базой данных.
-
-Содержит простые репозитории для `vault_entries`, `audit_log`, `settings` и `key_store`.
-Использует `DatabasePool` для получения соединений и `EncryptionService` для шифрования полей.
-"""
-
 import sqlite3
+from datetime import datetime
 import base64
 from typing import Optional, List, Dict, Any
 from core.crypto.placeholder import AES256Placeholder
 from core.crypto.abstract import EncryptionService
 from database.db import DatabasePool
-
 
 def _serialize_tags(tags: Optional[List[str]]) -> Optional[str]:
     # Сериализует список тегов в строку, или возвращает None
@@ -18,13 +12,11 @@ def _serialize_tags(tags: Optional[List[str]]) -> Optional[str]:
         return None
     return ",".join(tags)
 
-
 def _deserialize_tags(s: Optional[str]) -> List[str]:
     # Десериализует строку тегов в список
     if not s:
         return []
     return [t for t in s.split(",") if t]
-
 
 class VaultEntries:
 
@@ -173,14 +165,27 @@ class KeyStore:
     # Репозиторий для метаданных ключей (таблица `key_store`)
     def __init__(self, pool: DatabasePool):
         self.pool = pool
+        
+    def create_table(self):
+        with self.pool.connection() as conn:
+            conn.execute("""
+            CREATE TABLE IF NOT EXISTS key_store (
+                id INTEGER PRIMARY KEY,
+                key_type TEXT NOT NULL,
+                key_data BLOB NOT NULL,
+                version INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            conn.commit()
 
-    def add_key(self, key_type: str, salt: str, hash_val: str, params: Optional[str] = None) -> int:
-        # Добавляет запись о ключе (salt/hash/params)
+    def add_key(self, key_type: str, key_data: bytes, version: int = 1) -> int:
+        # Добавляет запись о ключе
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute(
-                "INSERT INTO key_store (key_type, salt, hash, params) VALUES (?, ?, ?, ?)",
-                (key_type, salt, hash_val, params),
+                "INSERT INTO key_store (key_type, key_data, version, created_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)",
+                (key_type, key_data, version),
             )
             conn.commit()
             return cur.lastrowid
@@ -189,13 +194,23 @@ class KeyStore:
         # Возвращает список хранимых ключевых записей
         with self.pool.connection() as conn:
             cur = conn.cursor()
-            cur.execute("SELECT id, key_type, salt, hash, params FROM key_store")
+            cur.execute("SELECT id, key_type, key_data, version, created_at FROM key_store")
             rows = cur.fetchall()
             return [dict(r) for r in rows]
 
-__all__ = [
-    "VaultEntries",
-    "AuditLog",
-    "Settings",
-    "KeyStore",
-]
+    def list_keys(self) -> List[Dict[str, Any]]:
+        with self.pool.connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id, key_type, key_data, version, created_at FROM key_store")
+            rows = cur.fetchall()
+            return [dict(r) for r in rows]
+
+    def get_latest_key(self, key_type: str):
+        with self.pool.connection() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT key_data, version, created_at FROM key_store WHERE key_type = ? ORDER BY version DESC LIMIT 1",
+                (key_type,)
+            )
+            row = cur.fetchone()
+            return row if row else None
