@@ -3,6 +3,8 @@ from pathlib import Path
 from queue import Queue, Empty
 from contextlib import contextmanager
 from typing import Callable, List
+from migrations import migrate_key_store
+
 
 class DatabasePool:
 
@@ -19,6 +21,7 @@ class DatabasePool:
         # Список функций-миграций (каждая принимает sqlite3.Connection)
         self._migrations: List[Callable[[sqlite3.Connection], None]] = [
             self._migration_1_initial_schema,
+            lambda conn: migrate_key_store(self),  # наша новая миграция
         ]
 
     def new_connection(self) -> sqlite3.Connection:
@@ -34,8 +37,6 @@ class DatabasePool:
 
     @contextmanager
     def connection(self) -> sqlite3.Connection:
-        # Контекстный менеджер для получения соединения из пула.
-        # Если пул пуст — создаём временное соединение (оно не возвращается в пул).
         try:
             conn = self._pool.get_nowait()
             temporary = False
