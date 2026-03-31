@@ -5,7 +5,6 @@ import os
 import re
 import secrets
 
-
 class KeyDerivation:
     def __init__(self, config: dict):
         self._validate_config(config)
