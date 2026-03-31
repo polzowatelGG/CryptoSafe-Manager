@@ -1,27 +1,80 @@
-import hashlib
-import ctypes
-import secrets
-from typing import Tuple, Optional
+from typing import Optional
+from crypto.key_derivation import KeyDerivation
+from crypto.key_cache import KeyCache
+from crypto.key_storage import KeyStorage
+
 
 class KeyManager:
-    def derive_key(self, password: str, salt: Optional[bytes]) -> Tuple[bytes, bytes]:
+    def __init__(self, storage: KeyStorage, config: dict):
+        self.storage = storage
+        self.derivation = KeyDerivation(config)
+        self.cache = KeyCache()
 
-        password_bytes = password.encode('utf-8')
-        used_salt = secrets.token_bytes(16) if salt is None else salt
-        combo = password_bytes + used_salt
-        key = hashlib.sha256(combo).digest()
-        self.secure_erase(bytearray(password_bytes))
-        self.secure_erase(bytearray(combo))
+        self._password: Optional[str] = None  # временно (до UI)
 
-        return key, used_salt
-    
-    def secure_erase(self, data: bytearray): # Функция для безопасного удаления данных из памяти / заглушка до 4 спринта
-        ptr = (ctypes.c_char * len(data)).from_buffer(data) #
-        for i in range(len(data)):
-            ptr[i] = 0  # Заполняем данные нулями для безопасного удаления
+    # установка пароля (например после логина)
+    def set_password(self, password: str):
+        self._password = password
 
-    def store_key(self):    # Функция для сохранения ключа в файл / заглушка
-        pass
-    
-    def load_key(self):     # Функция для загрузки ключа из файла / заглушка
-        pass
+    # основной метод (использует EntryManager)
+    def get_active_key(self) -> bytes:
+        # 1. пробуем кэш
+        cached = self.cache.get_key()
+        if cached:
+            return cached
+
+        # 2. получаем параметры
+        params = self.storage.get_pbkdf2_params()
+        if not params:
+            raise RuntimeError("Key not initialized")
+
+        if not self._password:
+            raise RuntimeError("Password not set")
+
+        # 3. деривация
+        key = self.derivation.derive_encryption_key(
+            self._password,
+            params["salt"]
+        )
+
+        # 4. кидаем в кэш
+        self.cache.store_key(key)
+
+        return key
+
+    # первичная инициализация (регистрация)
+    def initialize(self, password: str):
+        salt = self.derivation.generate_salt()
+
+        self.storage.add_pbkdf2_params(
+            salt=salt,
+            iterations=self.derivation.pbkdf2_iterations,
+            key_len=self.derivation.pbkdf2_key_len
+        )
+
+        key = self.derivation.derive_encryption_key(password, salt)
+        self.cache.store_key(key)
+
+        self._password = password
+
+    # логин
+    def unlock(self, password: str) -> bool:
+        params = self.storage.get_pbkdf2_params()
+        if not params:
+            return False
+
+        key = self.derivation.derive_encryption_key(
+            password,
+            params["salt"]
+        )
+
+        # можно добавить проверку через тестовую запись
+        self.cache.store_key(key)
+        self._password = password
+
+        return True
+
+    # логика блокировки 
+    def lock(self):
+        self.cache.clear_key()
+        self._password = None
