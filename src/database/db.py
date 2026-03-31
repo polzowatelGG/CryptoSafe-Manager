@@ -5,20 +5,18 @@ from contextlib import contextmanager
 from typing import Callable, List
 from migrations import migrate_key_store
 
-
 class DatabasePool:
-
     def __init__(self, db_path: str, size: int = 4):
-        # Путь к файлу БД; создаём директорию при необходимости
+        # путь к файлу БД; создаём директорию при необходимости
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Размер пула и очередь соединений
+        # размер пула и очередь соединений
         self.size = max(1, size)
         self._pool: "Queue[sqlite3.Connection]" = Queue(maxsize=self.size)
         self._fill_pool()
 
-        # Список функций-миграций (каждая принимает sqlite3.Connection)
+        # список функций-миграций (каждая принимает sqlite3.Connection)
         self._migrations: List[Callable[[sqlite3.Connection], None]] = [
             self._migration_1_initial_schema,
             lambda conn: migrate_key_store(self),  # наша новая миграция
@@ -36,7 +34,7 @@ class DatabasePool:
             self._pool.put(self.new_connection())
 
     @contextmanager
-    def connection(self) -> sqlite3.Connection:
+    def connection(self) -> sqlite3.Connection: 
         try:
             conn = self._pool.get_nowait()
             temporary = False
@@ -121,15 +119,11 @@ class DatabasePool:
         cur = conn.cursor()
         cur.execute(
             """
-            CREATE TABLE IF NOT EXISTS vault_entries (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                title TEXT NOT NULL,
-                username TEXT,
-                encrypted_password BLOB NOT NULL,
-                url TEXT,
-                notes TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            CREATE TABLE vault_entries (
+                id TEXT PRIMARY KEY,
+                encrypted_data BLOB NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 tags TEXT
             );
             """
@@ -173,6 +167,16 @@ class DatabasePool:
             );
             """
         )
+        
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS deleted_enties(
+                id TEXT,
+                deleted_at TIMESTAMP,
+                expires_at TIMESTAMP
+            )
+            """
+        )
 
         # Индексы для быстрого поиска
         cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_title ON vault_entries(title)")
@@ -182,7 +186,9 @@ class DatabasePool:
         cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_entry_id ON audit_log(entry_id)")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_settings_key ON settings(setting_key)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_key_store_type ON key_store(key_type)")
-
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_created_at ON vault_entries(created_at);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_updated_at ON vault_entries(updated_at);")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_tags ON vault_entries(tags);")
         conn.commit()
 
 __all__ = ["DatabasePool"]
