@@ -23,7 +23,7 @@ class ConfigManager:
     def __init__(self, config_path: str = "config.json"): # инициализация менеджера конфигурации с указанием пути к файлу конфигурации
         self.config_path = Path(config_path)
         self.config = {}
-        self.key_manager = KeyManager()
+        self.key_manager = None  # KeyManager создаётся позже, когда известны storage и config
         self.load()
 
     def load(self):
