@@ -5,9 +5,13 @@ from core.config import ConfigManager
 from database.db import DatabasePool
 from core.crypto.key_storage import KeyStorage
 from core.key_manager import KeyManager
+from core.crypto.authentication import Authenticator
+from core.state_manager import StateManager
+from core.events import EventBus 
 from core.vault.entry_manager import EntryManager
 from gui.main_window import MainWindow
 from gui.setup_wizard import SetupWizard
+from gui.login_dialog import LoginDialog
 
 def main():
     app = QApplication(sys.argv)
@@ -18,59 +22,47 @@ def main():
         wizard = SetupWizard()
         if wizard.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
-
-        db_path = getattr(wizard, "db_path", None)
-        if not db_path:
-            sys.exit(0)
-
+        db_path = wizard.db_path
         config.set_database_path(db_path)
-
-    pool = DatabasePool(db_path)
-    pool.migrate()
-
-    key_storage = KeyStorage(pool)
-
-    key_manager = KeyManager(
-        storage=key_storage,
-        config={
+        pool = DatabasePool(db_path)
+        pool.migrate()
+        key_storage = KeyStorage(pool)
+        key_manager = KeyManager(key_storage, config={
             "argon2_time": 3,
             "argon2_memory": 65536,
             "argon2_parallelism": 4,
             "pbkdf2_iterations": 100000,
-        }
-    )
-
-    entry_manager = EntryManager(pool, key_manager)
-    params = key_storage.get_pbkdf2_params()
-    password = "test_password_123!"
-
-    if not params:
-        key_manager.initialize(password)
-        print("[INIT] Key initialized")
-    else:
-        if not key_manager.unlock(password):
-            print("Invalid password")
-            sys.exit(1)
-
-    try:
-        test_id = entry_manager.create_entry({
-            "title": "Test",
-            "login": "admin",
-            "password": "secret"
         })
+        password = wizard.password_entry.text()
+        key_manager.initialize(password)
 
-        print("Created:", test_id)
+        authenticator = None
 
-        data = entry_manager.get_entry(test_id)
-        print("Decrypted:", data)
-
-    except Exception as e:
-        print("ERROR:", e)
-
-    window = MainWindow()
+    else:
+        pool = DatabasePool(db_path)
+        pool.migrate()
+        key_storage = KeyStorage(pool)
+        key_manager = KeyManager(key_storage, config={
+            "argon2_time": 3,
+            "argon2_memory": 65536,
+            "argon2_parallelism": 4,
+            "pbkdf2_iterations": 100000,
+        })
+        state_manager = StateManager(config, key_manager = key_manager)
+        event_bus = EventBus()
+        authenticator = Authenticator(key_manager, event_bus, state_manager)
+        login_dialog = LoginDialog(authenticator)
+        if login_dialog.exec() != QDialog.DialogCode.Accepted:
+            sys.exit(0)
+            
+    entry_manager = EntryManager(pool, key_manager)
+    window = MainWindow(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        authenticator=authenticator
+    )
     window.show()
-
     sys.exit(app.exec())
-
+            
 if __name__ == "__main__":
     main()
