@@ -1,37 +1,49 @@
-import sqlite3
-from database.db import DatabasePool
+from __future__ import annotations
+from typing import TYPE_CHECKING
 
-def migrate_key_store(pool: DatabasePool):
+if TYPE_CHECKING:
+    from database.db import DatabasePool
+
+
+def migrate(pool: "DatabasePool"):
     with pool.connection() as conn:
         cur = conn.cursor()
-        # проверяем наличие таблицы
-        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='key_store'")
-        if not cur.fetchone():
-            # создаем базовую таблицу
-            cur.execute("""
-            CREATE TABLE key_store (
-                id INTEGER PRIMARY KEY,
-                key_type TEXT NOT NULL,
-                key_data BLOB NOT NULL,
-                version INTEGER NOT NULL DEFAULT 1,
-                pbkdf2_iterations INTEGER,
-                pbkdf2_salt BLOB,
-                pbkdf2_key_len INTEGER,
-                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-            )
-            """)
-            conn.commit()
-            return
 
-        # добавляем недостающие колонки
-        cur.execute("PRAGMA table_info(key_store)")
-        columns = {row[1]: row for row in cur.fetchall()}
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS key_store (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_type TEXT NOT NULL,
+            key_data BLOB,
+            version INTEGER NOT NULL DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
-        if 'pbkdf2_iterations' not in columns:
-            cur.execute("ALTER TABLE key_store ADD COLUMN pbkdf2_iterations INTEGER")
-        if 'pbkdf2_salt' not in columns:
-            cur.execute("ALTER TABLE key_store ADD COLUMN pbkdf2_salt BLOB")
-        if 'pbkdf2_key_len' not in columns:
-            cur.execute("ALTER TABLE key_store ADD COLUMN pbkdf2_key_len INTEGER")
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS key_params (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            algo TEXT NOT NULL,  -- argon2 | pbkdf2
+            params BLOB NOT NULL,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+
+        conn.commit()
+
+
+def migrate_key_store(pool: "DatabasePool"):
+    with pool.connection() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS key_store (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            key_type TEXT NOT NULL,
+            key_data BLOB,
+            version INTEGER DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
 
         conn.commit()
