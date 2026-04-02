@@ -3,6 +3,8 @@ from core.crypto.key_derivation import KeyDerivation
 from core.crypto.key_cache import KeyCache
 from core.events import EventBus
 from core.crypto.key_storage import KeyStorage
+from core.key_manager import KeyManager
+from database.db import DatabasePool
 
 
 class Authenticator:
@@ -89,3 +91,52 @@ class Authenticator:
         self.login_time = None
         self.last_activity = None
         self.events.publish("UserLoggedOut")
+
+
+def test_change_password_with_reencrypt(tmp_path):
+    from core.vault.entry_manager import EntryManager
+
+    db_file = tmp_path / "test.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+
+    key_manager.initialize("OldPassword123!")
+    assert key_manager.unlock("OldPassword123!")
+
+    entry_manager = EntryManager(pool, key_manager)
+    entry_id = entry_manager.create_entry({"title": "A", "login": "u", "password": "p"})
+
+    key_manager.change_password("OldPassword123!", "NewPassword123!", entry_manager)
+
+    key_manager.lock()
+    assert not key_manager.is_unlocked()
+
+    assert key_manager.unlock("NewPassword123!")
+
+    entry = entry_manager.get_entry(entry_id)
+    assert entry["title"] == "A"
+    assert entry["login"] == "u"
+
+
+def test_keychain_fallback_store_load(tmp_path, monkeypatch):
+    pool = DatabasePool(str(tmp_path / "test.db"))
+    pool.migrate()
+
+    storage = KeyStorage(pool)
+    monkeypatch.setattr(storage, "_keychain_available", lambda: False)
+
+    key = b"0123456789abcdef0123456789abcdef"
+    storage.store_encryption_key(key)
+    loaded = storage.load_encryption_key()
+    assert loaded == key
+
+    storage.delete_encryption_key()
+    assert storage.load_encryption_key() is None
