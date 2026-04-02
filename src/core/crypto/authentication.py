@@ -1,89 +1,48 @@
 import time
-from key_derivation import KeyDerivation
-from key_cache import KeyCache
-from core.events import EventBus
-from key_storage import KeyStorage
+
 
 class Authenticator:
-    def __init__(
-        self,
-        key_derivation: KeyDerivation,
-        cache: KeyCache,
-        storage: KeyStorage,
-        event_bus: EventBus
-    ):
-        self.kd = key_derivation
-        self.cache = cache
-        self.storage = storage
+    def __init__(self, key_manager, event_bus, state_manager):
+        self.km = key_manager
         self.events = event_bus
+        self.state = state_manager
 
         self.failed_attempts = 0
 
-        self.login_time = None
-        self.last_activity = None
+    # ---------------- LOGIN ----------------
 
     def login(self, password: str) -> bool:
         delay = self._calculate_delay()
-        if delay > 0:
-            time.sleep(delay)
+        time.sleep(delay)
 
-        stored_hash = self.storage.get_auth_hash()
-        pbkdf2 = self.storage.get_pbkdf2_params()
+        if self.km.unlock(password):
+            self.failed_attempts = 0
 
-        if not pbkdf2:
-            raise ValueError("Missing PBKDF2 parameters")
+            self.state.unlock()
+            self.events.publish("UserLoggedIn")
 
-        try:
-            if stored_hash:
-                is_valid = self.kd.verify_password(password, stored_hash)
-            else:
-                dummy_hash = self.kd.create_auth_hash("dummy_password")
-                self.kd.verify_password(password, dummy_hash)
-                is_valid = False
+            return True
 
-            if is_valid:
-                enc_key = self.kd.derive_encryption_key(
-                    password,
-                    pbkdf2["salt"]
-                )
+        else:
+            self.failed_attempts += 1
+            self.events.publish("LoginFailed")
 
-                self.cache.store_key(enc_key)
+            return False
 
-                # secure wipe
-                enc_key = bytearray(enc_key)
-                for i in range(len(enc_key)):
-                    enc_key[i] = 0
+    # ---------------- LOGOUT ----------------
 
-                self.failed_attempts = 0
+    def logout(self):
+        self.km.lock()
+        self.state.lock()
 
-                now = time.time()
-                self.login_time = now
-                self.last_activity = now
+        self.events.publish("UserLoggedOut")
 
-                self.events.publish("UserLoggedIn")
-                return True
+    # ---------------- DELAY ----------------
 
-            else:
-                self.failed_attempts += 1
-                self.events.publish("LoginFailed")
-                return False
-
-        finally:
-            password = None
-
-    def _calculate_delay(self) -> int:
-        if 1 <= self.failed_attempts <= 2:
+    def _calculate_delay(self) -> float:
+        if self.failed_attempts <= 2:
             return 1
-        elif 3 <= self.failed_attempts <= 4:
+        elif self.failed_attempts <= 4:
             return 5
         else:
             return 30
-
-    def touch(self):
-        self.last_activity = time.time()
-
-    def logout(self):
-        self.cache.clear_key()
-        self.login_time = None
-        self.last_activity = None
-        self.events.publish("UserLoggedOut")
