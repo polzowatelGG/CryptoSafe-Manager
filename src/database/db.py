@@ -53,6 +53,15 @@ class DatabasePool:
                 conn.commit()
             return cur
 
+    def close(self):
+        """Закрытие всех соединений в пуле."""
+        while not self._pool.empty():
+            conn = self._pool.get_nowait()
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     # ---------------- migrations ----------------
     def migrate(self):
         with self.connection() as conn:
@@ -122,6 +131,15 @@ class DatabasePool:
             params TEXT,                 
             version INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+        """)
+
+        # ---------------- DELETED ENTRIES (soft-delete) ----------------
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS deleted_entries (
+            id TEXT PRIMARY KEY,
+            deleted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP
         );
         """)
         conn.commit()
