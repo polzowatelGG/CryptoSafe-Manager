@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
-from key_derivation import KeyDerivation
-from key_storage import KeyCache
+from core.crypto.key_derivation import KeyDerivation
+from core.crypto.key_cache import KeyCache
 
 class EncryptionService(ABC):
     def __init__(self, key_manager: KeyDerivation, cache: KeyCache):
