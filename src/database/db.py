@@ -142,6 +142,28 @@ class DatabasePool:
             expires_at TIMESTAMP
         );
         """)
+
+        # Индексы для ускорения поиска по датам и тегам (Sprint 3 DB-1)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at ON vault_entries (created_at);
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at ON vault_entries (updated_at);
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vault_entries_tags ON vault_entries (tags);
+        """)
+
         conn.commit()
+        
+    @contextmanager
+    def transaction(self):
+        with self.connection() as conn:
+            try:
+                yield conn
+                conn.commit()
+            except:
+                conn.rollback()
+                raise
         
 __all__ = ["DatabasePool"]

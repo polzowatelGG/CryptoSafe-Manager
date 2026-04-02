@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 from gui.widgets.password_entry import PasswordEntry
+from core.crypto.key_derivation import PasswordValidator
 
 
 class SetupWizard(QDialog):
@@ -86,6 +87,14 @@ class SetupWizard(QDialog):
 
         if not self.db_path:
             QMessageBox.warning(self, "Ошибка", "Выберите файл базы данных")
+            return
+        
+        if not PasswordValidator.validate_password_strength(pwd):
+            QMessageBox.warning(
+                self, 
+                "Слабый пароль",
+                "Мастер-пароль слишком слабый.\nТребования: минимум 12 символов, заглавные, строчные, цифры, спецсимволы, не из списка распространённых."
+            )
             return
 
         # Заглушка: здесь можно добавить шифрование/создание базы

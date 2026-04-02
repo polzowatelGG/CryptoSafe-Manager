@@ -8,7 +8,7 @@ if TYPE_CHECKING:
 def migrate(pool: "DatabasePool"):
     with pool.connection() as conn:
         cur = conn.cursor()
-
+        
         cur.execute("""
         CREATE TABLE IF NOT EXISTS key_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -19,7 +19,7 @@ def migrate(pool: "DatabasePool"):
         )
         """)
 
-        cur.execute("""
+        cur.execute(""" 
         CREATE TABLE IF NOT EXISTS key_params (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             algo TEXT NOT NULL,  -- argon2 | pbkdf2

@@ -3,15 +3,17 @@ import uuid
 from datetime import datetime
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
+import core.events as events
 
 class EntryManager:
-    def __init__(self, db_connection, key_manager):
+    def __init__(self, db_connection, key_manager, event_system=None):
         self.db = db_connection
         self.key_manager = key_manager
+        self.events = event_system if event_system is not None else events
 
     # получение AESGCM
     def _get_crypto(self, key: bytes = None) -> AESGCM:
-        if key is None:
+        if key is None: 
             key = self.key_manager.get_active_key()
 
         if not key:
@@ -58,19 +60,23 @@ class EntryManager:
 
         encrypted_blob = self._encrypt(payload)
 
-        self.db.execute(
-            """
-            INSERT INTO vault_entries (id, encrypted_data, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (
-                entry_id,
-                encrypted_blob,
-                datetime.utcnow(),
-                datetime.utcnow(),
-            ),
-            commit=True,
-        )
+        with self.db.transaction() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                INSERT INTO vault_entries (id, encrypted_data, created_at, updated_at, tags)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    entry_id,
+                    encrypted_blob,
+                    datetime.utcnow(),
+                    datetime.utcnow(),
+                    payload.get("tags"),
+                ),
+            )
+
+        self.events.publish("EntryCreated", entry_id=entry_id)
 
         return entry_id
 
@@ -116,15 +122,19 @@ class EntryManager:
 
         encrypted_blob = self._encrypt(updated_payload)
 
-        self.db.execute(
-            """
-            UPDATE vault_entries
-            SET encrypted_data = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (encrypted_blob, datetime.utcnow(), entry_id),
-            commit=True,
-        )
+        with self.db.transaction() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                UPDATE vault_entries
+                SET encrypted_data = ?, updated_at = ?, tags = ?
+                WHERE id = ?
+                """,
+                (encrypted_blob, datetime.utcnow(), updated_payload.get("tags"), entry_id),
+            )
+
+        self.events.publish("EntryUpdated", entry_id=entry_id)
+
 
     # удаление 
     def delete_entry(self, entry_id: str, soft_delete: bool = True):
@@ -142,14 +152,30 @@ class EntryManager:
                 commit=True,
             )
 
-        self.db.execute(
-            "DELETE FROM vault_entries WHERE id = ?",
-            (entry_id,),
-            commit=True,
-        )
+        with self.db.transaction() as conn:
+            cur = conn.cursor()
+            if soft_delete:
+                cur.execute(
+                    """
+                    INSERT OR REPLACE INTO deleted_entries (id, deleted_at, expires_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (
+                        entry_id,
+                        datetime.utcnow(),
+                        datetime.utcnow(),
+                    ),
+                )
+
+            cur.execute(
+                "DELETE FROM vault_entries WHERE id = ?",
+                (entry_id,),
+            )
+
+        self.events.publish("EntryDeleted", entry_id=entry_id)
+
 
     def reencrypt_all(self, old_key: bytes, new_key: bytes, conn=None):
-        """Перешифровка всех записей хранилища из старого ключа в новый."""
         if conn is None:
             with self.db.connection() as temp_conn:
                 self.reencrypt_all(old_key, new_key, conn=temp_conn)
