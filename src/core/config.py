@@ -73,11 +73,28 @@ class ConfigManager:
         self.config["preferences"][key] = value # обновляем предпочтение в конфигурации
         self.save()
 
-    def generate_key(self, password: str) -> bytes: #  генерации ключа на основе пароля и соли с сохранением соли в конфигурации
-        enc = self.config.setdefault("encryption", {}) # получаем раздел шифрования из конфигурации или создаём его
+    def generate_key(self, password: str) -> bytes:  # генерация ключа на основе пароля и соли с сохранением соли
+        enc = self.config.setdefault("encryption", {})
         salt_hex = enc.get("key_salt")
-        salt = bytes.fromhex(salt_hex) if salt_hex else None 
-        key, used_salt = self.key_manager.derive_key(password, salt) # генерируем ключ и получаем использованную соль
-        enc["key_salt"] = used_salt.hex() # сохраняем соль в конфигурации в виде hex строки
+        salt = bytes.fromhex(salt_hex) if salt_hex else None
+
+        # Если key_manager ещё не создан, инициализируем по текущим настройкам.
+        # Это позволяет использовать ConfigManager самостоятельно в тестах и сценариях.
+        if self.key_manager is None:
+            self.key_manager = KeyManager(storage=None, config={
+                "argon2_time": self.config.get("argon2_time", 3),
+                "argon2_memory": self.config.get("argon2_memory", 65536),
+                "argon2_parallelism": self.config.get("argon2_parallelism", 4),
+                "pbkdf2_iterations": self.config.get("pbkdf2_iterations", 100000),
+            })
+
+        # Метод derive_key отсутствует в старой версии, используем KeyDerivation из KeyManager.
+        # Генерируем соль, если её ещё нет.
+        if not salt:
+            salt = self.key_manager.derivation.generate_salt()
+
+        key = self.key_manager.derivation.derive_encryption_key(password, salt)
+
+        enc["key_salt"] = salt.hex()
         self.save()
         return key
