@@ -10,8 +10,9 @@ class EntryManager:
         self.key_manager = key_manager
 
     # получение AESGCM
-    def _get_crypto(self) -> AESGCM:
-        key = self.key_manager.get_active_key()
+    def _get_crypto(self, key: bytes = None) -> AESGCM:
+        if key is None:
+            key = self.key_manager.get_active_key()
 
         if not key:
             raise ValueError("Encryption key not available")
@@ -19,8 +20,8 @@ class EntryManager:
         return AESGCM(key)
 
     # шифрование
-    def _encrypt(self, data: dict) -> bytes:
-        aesgcm = self._get_crypto()
+    def _encrypt(self, data: dict, key: bytes = None) -> bytes:
+        aesgcm = self._get_crypto(key)
 
         nonce = os.urandom(12)
         plaintext = json.dumps(data).encode("utf-8")
@@ -30,8 +31,8 @@ class EntryManager:
         return nonce + ciphertext
 
     # дешифрование
-    def _decrypt(self, encrypted_blob: bytes) -> dict:
-        aesgcm = self._get_crypto()
+    def _decrypt(self, encrypted_blob: bytes, key: bytes = None) -> dict:
+        aesgcm = self._get_crypto(key)
 
         nonce = encrypted_blob[:12]
         ciphertext = encrypted_blob[12:]
@@ -130,7 +131,7 @@ class EntryManager:
         if soft_delete:
             self.db.execute(
                 """
-                INSERT INTO deleted_enties (id, deleted_at, expires_at)
+                INSERT INTO deleted_entries (id, deleted_at, expires_at)
                 VALUES (?, ?, ?)
                 """,
                 (
@@ -146,3 +147,23 @@ class EntryManager:
             (entry_id,),
             commit=True,
         )
+
+    def reencrypt_all(self, old_key: bytes, new_key: bytes, conn=None):
+        """Перешифровка всех записей хранилища из старого ключа в новый."""
+        if conn is None:
+            with self.db.connection() as temp_conn:
+                self.reencrypt_all(old_key, new_key, conn=temp_conn)
+            return
+
+        cur = conn.cursor()
+        rows = cur.execute("SELECT id, encrypted_data FROM vault_entries").fetchall()
+
+        for row in rows:
+            old_blob = row["encrypted_data"]
+            payload = self._decrypt(old_blob, key=old_key)
+            new_blob = self._encrypt(payload, key=new_key)
+
+            cur.execute(
+                "UPDATE vault_entries SET encrypted_data = ?, updated_at = ? WHERE id = ?",
+                (new_blob, datetime.utcnow(), row["id"]),
+            )
