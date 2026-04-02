@@ -1,66 +1,41 @@
-from typing import Optional
-from crypto.key_derivation import KeyDerivation
-from crypto.key_cache import KeyCache
-from crypto.key_storage import KeyStorage
+from core.crypto.key_derivation import KeyDerivation
+from core.crypto.key_cache import KeyCache
+from core.crypto.key_storage import KeyStorage
 
 
 class KeyManager:
-    def __init__(self, storage: KeyStorage, config: dict):
+    def __init__(self, storage: KeyStorage, config):
         self.storage = storage
         self.derivation = KeyDerivation(config)
         self.cache = KeyCache()
+        self._unlocked = False
 
-        self._password: Optional[str] = None  # временно (до UI)
+    # ---------------- INIT ----------------
 
-    # установка пароля (например после логина)
-    def set_password(self, password: str):
-        self._password = password
-
-    # основной метод (использует EntryManager)
-    def get_active_key(self) -> bytes:
-        # 1. пробуем кэш
-        cached = self.cache.get_key()
-        if cached:
-            return cached
-
-        # 2. получаем параметры
-        params = self.storage.get_pbkdf2_params()
-        if not params:
-            raise RuntimeError("Key not initialized")
-
-        if not self._password:
-            raise RuntimeError("Password not set")
-
-        # 3. деривация
-        key = self.derivation.derive_encryption_key(
-            self._password,
-            params["salt"]
-        )
-
-        # 4. кидаем в кэш
-        self.cache.store_key(key)
-
-        return key
-
-    # первичная инициализация (регистрация)
     def initialize(self, password: str):
+        """
+        Первый запуск — создаём salt + auth hash
+        """
         salt = self.derivation.generate_salt()
 
-        self.storage.add_pbkdf2_params(
-            salt=salt,
-            iterations=self.derivation.pbkdf2_iterations,
-            key_len=self.derivation.pbkdf2_key_len
+        auth_hash = self.derivation.create_auth_hash(password)
+
+        self.storage.save_auth_hash(auth_hash)
+        self.storage.save_pbkdf2_params(
+            salt,
+            self.derivation.pbkdf2_iterations
         )
 
-        key = self.derivation.derive_encryption_key(password, salt)
-        self.cache.store_key(key)
+    # ---------------- UNLOCK ----------------
 
-        self._password = password
-
-    # логин
     def unlock(self, password: str) -> bool:
+        stored_hash = self.storage.get_auth_hash()
         params = self.storage.get_pbkdf2_params()
-        if not params:
+
+        if not stored_hash or not params:
+            return False
+
+        if not self.derivation.verify_password(password, stored_hash):
             return False
 
         key = self.derivation.derive_encryption_key(
@@ -68,13 +43,28 @@ class KeyManager:
             params["salt"]
         )
 
-        # можно добавить проверку через тестовую запись
         self.cache.store_key(key)
-        self._password = password
+        self._unlocked = True
 
         return True
 
-    # логика блокировки 
+    # ---------------- ACCESS ----------------
+
+    def get_active_key(self) -> bytes:
+        key = self.cache.get_key()
+
+        if not key:
+            raise RuntimeError("Vault is locked")
+
+        return key
+
+    # ---------------- LOCK ----------------
+
     def lock(self):
         self.cache.clear_key()
-        self._password = None
+        self._unlocked = False
+
+    # ---------------- STATE ----------------
+
+    def is_unlocked(self) -> bool:
+        return self._unlocked
