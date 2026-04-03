@@ -1,6 +1,5 @@
 import time
 
-
 class Authenticator:
     def __init__(self, key_manager, event_bus, state_manager):
         self.km = key_manager
@@ -34,7 +33,6 @@ class Authenticator:
     def logout(self):
         self.km.lock()
         self.state.lock()
-
         self.events.publish("UserLoggedOut")
 
     # ---------------- DELAY ----------------

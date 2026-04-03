@@ -54,7 +54,6 @@ class DatabasePool:
             return cur
 
     def close(self):
-        """Закрытие всех соединений в пуле."""
         while not self._pool.empty():
             conn = self._pool.get_nowait()
             try:
@@ -99,6 +98,9 @@ class DatabasePool:
             tags TEXT
         )
         """)
+        
+        cur.execute("ALTER TABLE vault_entries ADD COLUMN totp_secret TEXT")
+        cur.execute("ALTER TABLE vault_entries ADD COLUMN shared_metadata TEXT")
 
         # audit
         cur.execute("""
@@ -143,7 +145,7 @@ class DatabasePool:
         );
         """)
 
-        # Индексы для ускорения поиска по датам и тегам (Sprint 3 DB-1)
+        # индексы для ускорения поиска по датам и тегам (Sprint 3 DB-1)
         cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at ON vault_entries (created_at);
         """)

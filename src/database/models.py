@@ -7,24 +7,24 @@ from core.crypto.abstract import EncryptionService
 from database.db import DatabasePool
 
 def _serialize_tags(tags: Optional[List[str]]) -> Optional[str]:
-    # Сериализует список тегов в строку, или возвращает None
+    # сериализует список тегов в строку, или возвращает None
     if tags is None:
         return None
     return ",".join(tags)
 
 def _deserialize_tags(s: Optional[str]) -> List[str]:
-    # Десериализует строку тегов в список
+    # десериализует строку тегов в список
     if not s:
         return []
     return [t for t in s.split(",") if t]
 
 class AuditLog:
-    # Репозиторий для записи событий аудита в таблицу `audit_log`
+    # репозиторий для записи событий аудита в таблицу `audit_log`
     def __init__(self, pool: DatabasePool):
         self.pool = pool
 
     def add(self, action: str, entry_id: Optional[int] = None, details: Optional[str] = None, signature: Optional[str] = None) -> int:
-        # Добавляет запись в журнал аудита
+        # добавляет запись в журнал аудита
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -35,13 +35,13 @@ class AuditLog:
             return cur.lastrowid
 
 class Settings:
-    # Репозиторий для настроек приложения (таблица `settings`)
+    # репозиторий для настроек приложения (таблица `settings`)
     def __init__(self, pool: DatabasePool, encryptor: Optional[EncryptionService] = None):
         self.pool = pool
         self.encryptor = encryptor or AES256Placeholder()
 
     def set(self, key: str, value: str, encrypted: bool = False, enc_key: Optional[bytes] = None) -> None:
-        # Сохраняет настройку; при encrypted=True шифрует значение и сохраняет в base64
+        # сохраняет настройку; при encrypted=True шифрует значение и сохраняет в base64
         if encrypted:
             if not enc_key:
                 raise ValueError("enc_key required for encrypted setting")
@@ -61,7 +61,7 @@ class Settings:
             conn.commit()
 
     def get(self, key: str, enc_key: Optional[bytes] = None) -> Optional[str]:
-        # Получает настройку; расшифровывает при необходимости
+        # получает настройку; расшифровывает при необходимости
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT setting_value, encrypted FROM settings WHERE setting_key = ?", (key,))
@@ -79,7 +79,7 @@ class Settings:
             return value
 
 class KeyStore:
-    # Репозиторий для метаданных ключей (таблица `key_store`)
+    # репозиторий для метаданных ключей (таблица `key_store`)
     def __init__(self, pool: DatabasePool):
         self.pool = pool
         
@@ -97,7 +97,7 @@ class KeyStore:
             conn.commit()
 
     def add_key(self, key_type: str, key_data: bytes, version: int = 1) -> int:
-        # Добавляет запись о ключе
+        # добавляет запись о ключе
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute(
@@ -108,7 +108,7 @@ class KeyStore:
             return cur.lastrowid
 
     def list_keys(self) -> List[Dict[str, Any]]:
-        # Возвращает список хранимых ключевых записей
+        # возвращает список хранимых ключевых записей
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT id, key_type, key_data, version, created_at FROM key_store")

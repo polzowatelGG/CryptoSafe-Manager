@@ -1,4 +1,3 @@
-# src/gui/widgets/secure_table.py
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
@@ -7,7 +6,6 @@ from PyQt6.QtWidgets import (
     QMenu,
     QHeaderView,
 )
-
 
 class SecureTable(QTableWidget):
     entry_edit_requested = pyqtSignal(str)
@@ -95,6 +93,10 @@ class SecureTable(QTableWidget):
         edit_action.triggered.connect(lambda: self.entry_edit_requested.emit(entry_id))
         delete_action.triggered.connect(lambda: self.entry_delete_requested.emit(entry_id))
 
+        show_pw_action = QAction("👁️ Показать пароль", self)
+        show_pw_action.triggered.connect(lambda: self._show_single_password(entry_id))
+        menu.addAction(show_pw_action)
+
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def clear_entries(self):
@@ -103,12 +105,11 @@ class SecureTable(QTableWidget):
         
         # Добавьте этот метод в класс SecureTable (после __init__ или в любом месте)
 
-def get_selected_entry_id(self):
-    """Возвращает ID выбранной записи или None"""
-    selected = self.selectedItems()
-    if not selected:
+    def get_selected_entry_id(self):
+        selected = self.selectedItems()
+        if not selected:
+            return None
+        row = selected[0].row()
+        if row < len(self.entries):
+            return self.entries[row]["id"]
         return None
-    row = selected[0].row()
-    if row < len(self.entries):
-        return self.entries[row]["id"]
-    return None

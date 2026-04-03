@@ -78,8 +78,8 @@ class ConfigManager:
         salt_hex = enc.get("key_salt")
         salt = bytes.fromhex(salt_hex) if salt_hex else None
 
-        # Если key_manager ещё не создан, инициализируем по текущим настройкам.
-        # Это позволяет использовать ConfigManager самостоятельно в тестах и сценариях.
+        # если key_manager ещё не создан, инициализируем по текущим настройкам.
+        # это позволяет использовать ConfigManager самостоятельно в тестах и сценариях.
         if self.key_manager is None:
             self.key_manager = KeyManager(storage=None, config={
                 "argon2_time": self.config.get("argon2_time", 3),
@@ -88,8 +88,8 @@ class ConfigManager:
                 "pbkdf2_iterations": self.config.get("pbkdf2_iterations", 100000),
             })
 
-        # Метод derive_key отсутствует в старой версии, используем KeyDerivation из KeyManager.
-        # Генерируем соль, если её ещё нет.
+        # метод derive_key отсутствует в старой версии, используем KeyDerivation из KeyManager.
+        # генерируем соль, если её ещё нет.
         if not salt:
             salt = self.key_manager.derivation.generate_salt()
 

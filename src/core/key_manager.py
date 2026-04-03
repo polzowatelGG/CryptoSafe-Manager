@@ -73,7 +73,6 @@ class KeyManager:
     # ---------------- CHANGE PASSWORD ----------------
 
     def change_password(self, old_password: str, new_password: str, entry_manager):
-        """Смена мастер-пароля + перешифровка всех записей (must)."""
         if not self.unlock(old_password):
             raise ValueError("Current password is invalid")
 
@@ -82,10 +81,10 @@ class KeyManager:
         if not PasswordValidator.validate_password_strength(new_password):
             raise ValueError("New password does not meet strength requirements")
 
-        # Текущий активный ключ
+        # текущий активный ключ
         old_key = self.get_active_key()
 
-        # Новый ключ и хэш
+        # новый ключ и хэш
         new_salt = self.derivation.generate_salt()
         new_hash = self.derivation.create_auth_hash(new_password)
         new_key = self.derivation.derive_encryption_key(new_password, new_salt)

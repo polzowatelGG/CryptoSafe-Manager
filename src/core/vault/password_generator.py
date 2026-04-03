@@ -1,14 +1,3 @@
-#Безопасная генерация паролей
-#ID	Описание требования	Приоритет
-#GEN-1	Генератор обязан использовать secrets.choice() или secrets.randbelow() для всей случайности.	Must
-#GEN-2	Параметры настройки обязаны включать:	Must
-#- Длину (8-64 символа, по умолчанию 16)	
-#- Наборы символов: заглавные (A-Z), строчные (a-z), цифры (0-9), спецсимволы (!@#$%^&*)	
-#- Исключение неоднозначных символов (l, I, 1, 0, O)	
-#GEN-3	Генератор обязан гарантировать, что в пароле есть хотя бы один символ из каждого выбранного набора.	Must
-#GEN-4	Сгенерированные пароли должны проходить анализ надежности по zxcvbn или аналогичному методу (оценка ≥ 3/4).	Should
-#GEN-5	История паролей должна предотвращать недавние дубликаты (последние 20 сгенерированных паролей).
-
 import secrets
 
 class PasswordGenerator:
@@ -40,7 +29,7 @@ class PasswordGenerator:
         while True:
             password = "".join(secrets.choice(all_chars) for _ in range(length))
  
-            # Ensure password contains at least one character from each selected set
+            # проверяем, что пароль соответствует выбранным критериям и не повторяется в последних 20
             if (use_upper and not any(c.isupper() for c in password)) or \
                 (use_lower and not any(c.islower() for c in password)) or \
                 (use_digits and not any(c.isdigit() for c in password)) or \
