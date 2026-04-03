@@ -12,7 +12,6 @@ from PyQt6.QtWidgets import (
     QLabel,
 )
 
-
 class SettingsDialog(QDialog):
     def __init__(self):
         super().__init__()

@@ -1,15 +1,26 @@
 from core.crypto.abstract import EncryptionService
 
-class AES256Placeholder(EncryptionService): 
-    def xor_bytes(self, data: bytes, key: bytes) -> bytes: # функция для выполнения операции XOR между данными и ключом / заглушка до спринта 3
+class AES256Placeholder(EncryptionService):
+    def encrypt(self, data: bytes, key: bytes = None) -> bytes:
+        key_bytes = key
+        if key_bytes is None:
+            if not self.cache:
+                raise ValueError("Encryption key not available in cache")
+            key_bytes = self.cache.get_key()
 
-        result = bytearray() # преобразовать данные в bytearray для возможности изменения
-        for i in range(len(data)):
-            result.append(data[i] ^ key[i % len(key)]) # выполнить XOR между каждым байтом данных и соответствующим байтом ключа (циклически)
-        return bytes(result) 
-    
-    def encrypt(self, data: bytes, key: bytes) -> bytes: #зашифровать данные с помощью ключа
-        return self.xor_bytes(data, key) 
+        if key_bytes is None:
+            raise ValueError("Encryption key not available")
 
-    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes: #расшифровать данные с помощью ключа
-        return self.xor_bytes(ciphertext, key) 
+        return bytes([b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(data)])
+
+    def decrypt(self, ciphertext: bytes, key: bytes = None) -> bytes:
+        key_bytes = key
+        if key_bytes is None:
+            if not self.cache:
+                raise ValueError("Encryption key not available in cache")
+            key_bytes = self.cache.get_key()
+
+        if key_bytes is None:
+            raise ValueError("Encryption key not available")
+
+        return bytes([b ^ key_bytes[i % len(key_bytes)] for i, b in enumerate(ciphertext)])

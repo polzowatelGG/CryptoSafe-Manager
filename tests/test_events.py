@@ -1,17 +1,18 @@
-from core import events
+from core.events import EventBus
 
-def test_subscribe_and_publish():
-    called = {"ok": False}
 
-    def handler(**kwargs):
-        called["ok"] = True
-        called["data"] = kwargs
+def test_eventbus_subscribe_publish_unsubscribe(): # тестируем базовую функциональность шины событий: подписка, публикация и отписка
+    bus = EventBus()
+    called = {}
 
-    events.subscribe("TestEvent", handler)
-    events.publish("TestEvent", a=1, b=2)
+    def handler(**kwargs): # простой обработчик, который сохраняет аргументы в словарь для проверки
+        called.update(kwargs)
 
-    assert called["ok"] is True
-    assert called.get("data", {}).get("a") == 1
+    bus.subscribe("ev", handler) # подписываемся на событие "ev"
+    bus.publish("ev", x=1)
+    assert called.get("x") == 1
 
-    # очистим подписку
-    events.unsubscribe("TestEvent", handler)
+    bus.unsubscribe("ev", handler) # отписка от события "ev"
+    called.clear()
+    bus.publish("ev", x=2)
+    assert called == {}

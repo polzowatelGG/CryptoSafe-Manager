@@ -1,10 +1,21 @@
-from abc import ABC, abstractmethod # абстрактный класс для криптографических сервисов
+from abc import ABC, abstractmethod
+from typing import Optional
+from core.crypto.key_derivation import KeyDerivation
+from core.crypto.key_cache import KeyCache
 
-class EncryptionService(ABC): 
-    @abstractmethod # абстрактный метод для шифрования данных в дочернем классе
-    def encrypt(self, data: bytes, key: bytes) -> bytes: #зашифровать данные с помощью ключа в дочернем классе
-        pass #реализование в placeholder 
+class EncryptionService(ABC):
+    def __init__(
+        self,
+        key_manager: Optional[KeyDerivation] = None,
+        cache: Optional[KeyCache] = None,
+    ):
+        self.key_manager = key_manager
+        self.cache = cache
 
     @abstractmethod
-    def decrypt(self, ciphertext: bytes, key: bytes) -> bytes: #расшифровать данные с помощью ключа в дочернем классе
-        pass #реализование в placeholder
+    def encrypt(self, data: bytes, key: Optional[bytes] = None) -> bytes:
+        pass
+
+    @abstractmethod
+    def decrypt(self, ciphertext: bytes, key: Optional[bytes] = None) -> bytes:
+        pass

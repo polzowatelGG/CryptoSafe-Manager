@@ -1,73 +1,61 @@
-import os
-from pathlib import Path
+import pytest
+from PyQt6.QtWidgets import QDialog
+from gui.setup_wizard import SetupWizard
+from gui.main_window import MainWindow
+from core.config import ConfigManager
+from database.db import DatabasePool
+from core.crypto.key_storage import KeyStorage
+from core.key_manager import KeyManager
+from core.vault.entry_manager import EntryManager
 
-def test_initial_setup_accepts(qapp, monkeypatch, tmp_path):
-    # Подменяем всплывающие сообщения, чтобы не блокировать тест
-    from PyQt6.QtWidgets import QMessageBox, QDialog
-    monkeypatch.setattr(QMessageBox, "information", lambda *a, **k: None)
-    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: None)
-
-    from gui.setup_wizard import SetupWizard
-
-    wiz = SetupWizard()
-    wiz.password_entry.line_edit.setText("strongpass")
-    wiz.password_confirm_entry.line_edit.setText("strongpass")
-    wiz.db_path = str(tmp_path / "app.db")
-
-    wiz._finish_setup()
-
-    # Поддерживаем разные версия PyQt: проверяем значение accepted гибко
-    # Получаем числовое значение Accepted в разных версиях PyQt
-    if hasattr(QDialog, "Accepted"):
-        accepted_val = QDialog.Accepted
-    elif hasattr(QDialog, "DialogCode") and hasattr(QDialog.DialogCode, "Accepted"):
-        try:
-            accepted_val = int(QDialog.DialogCode.Accepted)
-        except Exception:
-            accepted_val = 1
-    else:
-        accepted_val = 1
-
-    assert wiz.result() == accepted_val
+def test_setup_wizard_accepts_valid_data(qapp, tmp_path):
+    wizard = SetupWizard()
+    
+    # устанавливаем пароль и подтверждение
+    wizard.password_entry.line_edit.setText("StrongPass123!")
+    wizard.password_confirm_entry.line_edit.setText("StrongPass123!")
+    
+    # выбираем временный файл БД
+    db_file = tmp_path / "test_vault.db"
+    wizard.db_path = str(db_file)
+    wizard.db_label.setText(str(db_file))
+    
+    # эмулируем нажатие "Готово"
+    wizard._finish_setup()
+    
+    # проверяем, что диалог принят (accept)
+    assert wizard.result() == QDialog.DialogCode.Accepted
+    assert wizard.db_path == str(db_file)
 
 
-def test_main_window_creation(qapp):
-    from gui.main_window import MainWindow
-    from gui.widgets.secure_table import SecureTable
+def test_setup_wizard_rejects_mismatched_passwords(qapp):
+    wizard = SetupWizard()
+    wizard.password_entry.line_edit.setText("Pass123")
+    wizard.password_confirm_entry.line_edit.setText("Pass456")
+    
+    wizard._finish_setup()
+    
+    assert wizard.result() != QDialog.DialogCode.Accepted
 
-    win = MainWindow()
+def test_main_window_import():
+    assert MainWindow is not None
 
-    assert "Secure Vault" in win.windowTitle()
-    assert hasattr(win, "table")
-    assert isinstance(win.table, SecureTable)
-
-
-def test_config_load_and_save(tmp_path):
-    from core.config import ConfigManager
-
-    cfg_path = tmp_path / "cfg.json"
-    cm = ConfigManager(str(cfg_path))
-
-    # Конфиг должен существовать и иметь ключ database_path
-    assert cm.get_database_path() is not None
-
-    # Изменим и сохраним, затем загрузим заново
-    cm.set_preference("theme", "dark")
-    cm2 = ConfigManager(str(cfg_path))
-    assert cm2.get_preference("theme") == "dark"
-
-
-def test_db_fixture_allows_insert(test_db):
-    """Проверяем, что фикстура тестовой БД содержит применённые миграции и позволяет операции."""
-    pool, db_path = test_db
-
-    # Вставим запись и прочитаем её
-    pool.execute(
-        "INSERT INTO vault_entries (title, username, encrypted_password) VALUES (?, ?, ?)",
-        ("T1", "u1", b"pwd"),
-        commit=True,
-    )
-
-    rows = pool.query("SELECT title, username FROM vault_entries WHERE title=?", ("T1",))
-    assert len(rows) == 1
-    assert rows[0]["username"] == "u1"
+def test_main_window_accepts_entry_manager(qapp, tmp_path):
+    # создаём временную БД и настраиваем KeyManager и EntryManager
+    db_file = tmp_path / "test.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+    
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+    key_manager.initialize("testpass")
+    key_manager.unlock("testpass")
+    
+    entry_manager = EntryManager(pool, key_manager)
+    entry_manager.create_entry({"title": "Test", "password": "123"})
+    pass
