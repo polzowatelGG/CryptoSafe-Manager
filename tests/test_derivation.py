@@ -1,4 +1,6 @@
-import time
+from pathlib import Path
+import time, os
+from pytest import MonkeyPatch
 from core.crypto.key_derivation import KeyDerivation
 from core.crypto.key_cache import KeyCache
 from core.events import EventBus
@@ -93,7 +95,7 @@ class Authenticator:
         self.events.publish("UserLoggedOut")
 
 
-def test_change_password_with_reencrypt(tmp_path):
+def test_change_password_with_reencrypt(tmp_path: Path):
     from core.vault.entry_manager import EntryManager
 
     db_file = tmp_path / "test.db"
@@ -126,7 +128,7 @@ def test_change_password_with_reencrypt(tmp_path):
     assert entry["login"] == "u"
 
 
-def test_keychain_fallback_store_load(tmp_path, monkeypatch):
+def test_keychain_fallback_store_load(tmp_path: Path, monkeypatch: MonkeyPatch):
     pool = DatabasePool(str(tmp_path / "test.db"))
     pool.migrate()
 
@@ -140,3 +142,20 @@ def test_keychain_fallback_store_load(tmp_path, monkeypatch):
 
     storage.delete_encryption_key()
     assert storage.load_encryption_key() is None
+
+def test_key_derivation_consistency():
+    from core.crypto.key_derivation import KeyDerivation
+    config = {"pbkdf2_iterations": 100000}  # маленькое значение для скорости теста
+    kd = KeyDerivation(config)
+    password = "test_password"
+    salt = os.urandom(16)
+    
+    keys = []
+    for _ in range(100):
+        key = kd.derive_encryption_key(password, salt)
+        keys.append(key)
+    
+    # все ключи должны быть одинаковыми
+    first = keys[0]
+    for key in keys[1:]:
+        assert key == first
