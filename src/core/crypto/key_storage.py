@@ -3,13 +3,14 @@ import os
 from pathlib import Path
 from typing import Optional
 
+
+
 try:
     import keyring
 except ImportError:
     keyring = None
 
 from database.db import DatabasePool
-
 
 class KeyStorage:
     def __init__(self, pool: DatabasePool):
@@ -96,7 +97,7 @@ class KeyStorage:
                 keyring.set_password(self._service, self._username, hex_key)
                 return
             except Exception:
-                # Попытка через keychain не удалась — переключаемся на fallback
+                # попытка через keychain не удалась — переключаемся на fallback
                 pass
 
         self._save_key_fallback(hex_key)

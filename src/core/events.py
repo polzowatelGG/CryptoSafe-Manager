@@ -5,7 +5,7 @@ import threading
 from typing import Callable, Any, Dict, List
 
 
-# Поддерживаемые имена событий
+# константы событий
 ENTRY_ADDED = "EntryAdded"
 ENTRY_UPDATED = "EntryUpdated"
 ENTRY_DELETED = "EntryDeleted"
@@ -16,28 +16,28 @@ CLIPBOARD_CLEARED = "ClipboardCleared"
 
 
 class EventBus:
-    # Простая потокобезопасная шина событий.
-    # Обработчики вызываются синхронно в потоке, который вызвал `publish`.
+    # простая потокобезопасная шина событий.
+    # обработчики вызываются синхронно в потоке, который вызвал `publish`.
 
     def __init__(self) -> None:
         self._lock = threading.Lock()  # потокобезопасность
         self._subs: Dict[str, List[Callable[..., None]]] = {}  # словарь подписок
 
     def subscribe(self, event: str, handler: Callable[..., None]) -> None:
-        # Добавляет обработчик для события (без дубликатов)
+        # джобавляет обработчик для события (без дубликатов)
         with self._lock:
             self._subs.setdefault(event, [])
             if handler not in self._subs[event]:
                 self._subs[event].append(handler)
 
     def unsubscribe(self, event: str, handler: Callable[..., None]) -> None:
-        # Удаляет обработчик для события
+        # удаляет обработчик для события
         with self._lock:
             if event in self._subs and handler in self._subs[event]:
                 self._subs[event].remove(handler)
 
     def publish(self, event: str, **kwargs: Any) -> None:
-        # Публикует событие: копируем список обработчиков и вызываем их
+        # публикует событие: копируем список обработчиков и вызываем их
         with self._lock:
             handlers = list(self._subs.get(event, []))
 
@@ -45,11 +45,11 @@ class EventBus:
             try:
                 h(**kwargs)
             except Exception:
-                # В заглушке игнорируем ошибки обработчиков
+                # в заглушке игнорируем ошибки обработчиков
                 pass
 
 
-# Глобальная шина
+# глобальная шина - 
 _bus = EventBus()
 
 def subscribe(event: str, handler: Callable[..., None]) -> None:
@@ -65,14 +65,13 @@ def publish(event: str, **kwargs: Any) -> None:
 
 
 class AuditLogger:
-    # Заглушка аудита: подписывается на события и пишет простые строки в лог.
-    # Создаётся при импорте модуля, чтобы сразу ловить события.
-
+    # заглушка аудита: подписывается на события и пишет простые строки в лог.
+    # создаётся при импорте модуля, чтобы сразу ловить события.
     def __init__(self, path: str = "src/logs/audit.log") -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)  # создаём папку для логов
 
-        # Подписываемся на события
+        # подписываемся на события
         subscribe(ENTRY_ADDED, self.on_entry_added)
         subscribe(ENTRY_UPDATED, self.on_entry_updated)
         subscribe(ENTRY_DELETED, self.on_entry_deleted)
@@ -82,13 +81,12 @@ class AuditLogger:
         subscribe(CLIPBOARD_CLEARED, self.on_clipboard_cleared)
 
     def _write(self, msg: str) -> None:
-        # Дописывает строку в файл лога с UTC-временем
+        # дописывает строку в файл лога с UTC-временем
         ts = datetime.utcnow().isoformat() + "Z"
         try:
             with open(self.path, "a", encoding="utf-8") as f:
                 f.write(f"{ts} - {msg}\n")
         except Exception:
-            # В заглушке ошибки записи игнорируем
             pass
 
     def on_entry_added(self, entry_id: str = "") -> None:
@@ -113,9 +111,8 @@ class AuditLogger:
         self._write("ClipboardCleared")
 
 
-# Создаём заглушку при импорте
+# создаём заглушку при импорте
 _audit_logger = AuditLogger()
-
 
 __all__ = [
     "subscribe",

@@ -56,6 +56,8 @@ class EntryManager:
             "created_at": datetime.utcnow().isoformat(),
             "updated_at": datetime.utcnow().isoformat(),
             "version": 1,
+            "totp_secret": data.get("totp_secret"),      # новый
+            "shared_metadata": data.get("shared_metadata")  # новый
         }
 
         encrypted_blob = self._encrypt(payload)

@@ -1,11 +1,6 @@
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import (
-    QTableWidget,
-    QTableWidgetItem,
-    QMenu,
-    QHeaderView,
-)
+from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QMenu, QHeaderView, QMessageBox
 
 class SecureTable(QTableWidget):
     entry_edit_requested = pyqtSignal(str)
@@ -99,12 +94,32 @@ class SecureTable(QTableWidget):
 
         menu.exec(self.viewport().mapToGlobal(pos))
 
+    def _show_single_password(self, entry_id: str):
+        entry = None
+        for e in self.entries:
+            if e["id"] == entry_id:
+                entry = e
+                break
+        if not entry:
+            return
+
+        password = entry.get("password", "")
+        if not password:
+            QMessageBox.information(self, "Информация", "Пароль не задан")
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Пароль")
+        msg.setText(f"Пароль для записи:\n\n{password}")
+        msg.setInformativeText("Это окно закроется автоматически через 30 секунд.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        QTimer.singleShot(30000, msg.accept)
+        msg.exec()
+
     def clear_entries(self):
         self.entries.clear()
         self.setRowCount(0)
         
-        # Добавьте этот метод в класс SecureTable (после __init__ или в любом месте)
-
     def get_selected_entry_id(self):
         selected = self.selectedItems()
         if not selected:
@@ -113,3 +128,41 @@ class SecureTable(QTableWidget):
         if row < len(self.entries):
             return self.entries[row]["id"]
         return None
+    
+    def filter_entries(self, search_text: str):
+        if not search_text.strip():
+            for row in range(self.rowCount()):
+                self.setRowHidden(row, False)
+            return
+
+        # разбор фильтров
+        filters = {}
+        words = search_text.split()
+        for word in words:
+            if ':' in word:
+                field, value = word.split(':', 1)
+                if field in ('title', 'username', 'url', 'notes'):
+                    filters[field] = value.lower()
+            else:
+                filters.setdefault('any', []).append(word.lower())
+
+        for row, entry in enumerate(self.entries):
+            visible = True
+            # проверка фильтров по конкретным полям
+            for field, val in filters.items():
+                if field == 'any':
+                    continue
+                field_value = entry.get(field, '').lower()
+                if val not in field_value:
+                    visible = False
+                    break
+            if visible and 'any' in filters:
+                # полнотекстовый поиск по всем полям
+                haystack = (entry.get('title', '') + ' ' +
+                            entry.get('username', '') + ' ' +
+                            entry.get('url', '') + ' ' +
+                            entry.get('notes', '')).lower()
+                if not any(any_word in haystack for any_word in filters['any']):
+                    visible = False
+
+            self.setRowHidden(row, not visible)

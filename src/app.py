@@ -35,9 +35,17 @@ def main():
         })
         password = wizard.password_entry.text()
         key_manager.initialize(password)
-
-        authenticator = None
-
+        # разблокируем хранилище после создания
+        key_manager.unlock(password)
+        
+        # создаём state_manager и authenticator (как в else)
+        state_manager = StateManager(config)
+        event_bus = EventBus()
+        authenticator = Authenticator(key_manager, event_bus, state_manager)
+        # сбрасываем счётчик неудачных попыток и устанавливаем состояние
+        authenticator.failed_attempts = 0
+        state_manager.unlock()
+        event_bus.publish("UserLoggedIn")   # оповещаем о входе
     else:
         pool = DatabasePool(db_path)
         pool.migrate()
@@ -48,21 +56,22 @@ def main():
             "argon2_parallelism": 4,
             "pbkdf2_iterations": 100000,
         })
-        state_manager = StateManager(config, key_manager = key_manager)
+        state_manager = StateManager(config)
         event_bus = EventBus()
         authenticator = Authenticator(key_manager, event_bus, state_manager)
         login_dialog = LoginDialog(authenticator)
         if login_dialog.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
-            
+
     entry_manager = EntryManager(pool, key_manager)
     window = MainWindow(
         entry_manager=entry_manager,
         key_manager=key_manager,
-        authenticator=authenticator
+        authenticator=authenticator,
+        state_manager=state_manager
     )
     window.show()
     sys.exit(app.exec())
-            
+
 if __name__ == "__main__":
     main()

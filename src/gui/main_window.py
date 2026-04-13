@@ -1,25 +1,47 @@
 from PyQt6.QtWidgets import (
     QMainWindow, QStatusBar, QMessageBox, QDialog, QVBoxLayout,
-    QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox, QApplication,
-    QTableWidgetItem
+    QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
+    QTableWidgetItem, QPushButton, QHBoxLayout, QLabel, QWidget
 )
 from PyQt6.QtGui import QAction
+from PyQt6.QtCore import QEvent, QUrl
 from datetime import datetime
 import uuid
 import re
 from core.crypto.key_derivation import PasswordValidator
+from core.vault.password_generator import PasswordGenerator
 from gui.widgets.audit_log_viewer import AuditLogViewer
 from gui.widgets.secure_table import SecureTable
 from gui.settings_dialog import SettingsDialog
 
 
+class PasswordStrengthIndicator(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(20)
+        self.update_strength("")
+
+    def update_strength(self, password: str):
+        from core.crypto.key_derivation import PasswordValidator
+        if not password:
+            self.setText("⚪ Не введён")
+            self.setStyleSheet("color: gray;")
+        elif PasswordValidator.validate_password_strength(password):
+            self.setText("🟢 Надёжный")
+            self.setStyleSheet("color: green; font-weight: bold;")
+        else:
+            self.setText("🔴 Слабый (мин. 12 символов, заглавные, строчные, цифры, спецсимволы)")
+            self.setStyleSheet("color: red;")
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, entry_manager=None, key_manager=None, authenticator=None, parent=None):
+    def __init__(self, entry_manager=None, key_manager=None, authenticator=None, state_manager=None, parent=None):
         super().__init__(parent)
         self.entry_manager = entry_manager
         self.key_manager = key_manager
         self.authenticator = authenticator
-        self.installEventFilter(self)  # для авто-блокировки при сворачивании/потере фокуса
+        self.state_manager = state_manager
+        self.installEventFilter(self)
 
         self.setWindowTitle("Secure Vault")
         self.resize(900, 600)
@@ -84,7 +106,6 @@ class MainWindow(QMainWindow):
         self.toggle_pass_action.triggered.connect(self._toggle_passwords)
         view_menu.addSeparator()
         view_menu.addAction(self.toggle_pass_action)
-        # хоткей для быстрого переключения видимости паролей
         self.toggle_pass_action.setShortcut("Ctrl+Shift+P")
 
         # Справка
@@ -94,7 +115,7 @@ class MainWindow(QMainWindow):
         help_menu.addAction(about_action)
 
     # ------------------------
-    # Центральная таблица
+    # Центральная таблица с поиском
     # ------------------------
     def _create_central_table(self):
         self.table = SecureTable()
@@ -111,7 +132,21 @@ class MainWindow(QMainWindow):
         self.table.entry_edit_requested.connect(self._on_edit_entry_by_id)
         self.table.entry_delete_requested.connect(self._on_delete_entry_by_id)
 
-        self.setCentralWidget(self.table)
+        # Строка поиска
+        self.search_input = QLineEdit()
+        self.search_input.setPlaceholderText("Поиск (например, title:работа или просто текст)")
+        self.search_input.textChanged.connect(self._on_search)
+
+        # Компоновка
+        container = QWidget()
+        layout = QVBoxLayout()
+        layout.addWidget(self.search_input)
+        layout.addWidget(self.table)
+        container.setLayout(layout)
+        self.setCentralWidget(container)
+
+    def _on_search(self, text):
+        self.table.filter_entries(text)
 
     # ------------------------
     # Статус-бар
@@ -136,41 +171,56 @@ class MainWindow(QMainWindow):
     def _on_add_entry(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Добавить запись")
-        dialog.resize(400, 350)
-
+        dialog.resize(450, 450)
         layout = QVBoxLayout(dialog)
         form_layout = QFormLayout()
 
+        # Поля
         title_edit = QLineEdit()
         username_edit = QLineEdit()
         password_edit = QLineEdit()
         password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         url_edit = QLineEdit()
         notes_edit = QTextEdit()
-        notes_edit.setMaximumHeight(80)
+        notes_edit.setMaximumHeight(100)
+
+        # Индикатор надёжности пароля
+        strength_indicator = PasswordStrengthIndicator()
+
+        # Кнопка генерации пароля
+        gen_btn = QPushButton("Сгенерировать пароль")
+        password_layout = QHBoxLayout()
+        password_layout.addWidget(password_edit)
+        password_layout.addWidget(gen_btn)
 
         form_layout.addRow("Название:", title_edit)
         form_layout.addRow("Логин:", username_edit)
-        form_layout.addRow("Пароль:", password_edit)
+        form_layout.addRow("Пароль:", password_layout)
+        form_layout.addRow("", strength_indicator)
         form_layout.addRow("URL:", url_edit)
         form_layout.addRow("Заметки:", notes_edit)
+
+        password_edit.textChanged.connect(lambda text: strength_indicator.update_strength(text))
+
+        def generate_password():
+            gen = PasswordGenerator()
+            new_pw = gen.generate_password(length=16)
+            password_edit.setText(new_pw)
+            strength_indicator.update_strength(new_pw)
+
+        gen_btn.clicked.connect(generate_password)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            title_raw = title_edit.text().strip()
-            username_raw = username_edit.text()
-            url_raw = url_edit.text()
+            title = self.sanitize_text(title_edit.text().strip(), 100)
+            username = self.sanitize_text(username_edit.text(), 255)
+            url = self.sanitize_text(url_edit.text(), 500)
             password = password_edit.text()
-
-            title = self.sanitize_text(title_raw, max_len=100)
-            username = self.sanitize_text(username_raw, max_len=255)
-            url = self.sanitize_text(url_raw, max_len=500)
 
             if not title:
                 QMessageBox.warning(self, "Ошибка", "Название не может быть пустым")
@@ -179,25 +229,20 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Ошибка", "Пароль обязателен")
                 return
 
+            if url and not QUrl(url).isValid():
+                QMessageBox.warning(self, "Ошибка", "Некорректный URL")
+                return
+
             if not PasswordValidator.validate_password_strength(password):
-                reply = QMessageBox.question(
-                    self,
-                    "Слабый пароль",
-                    "Пароль не соответствует требованиям (мин. 12 символов, заглавные, строчные, цифры, спецсимволы, не из списка распространённых).\nВсё равно использовать?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
+                reply = QMessageBox.question(self, "Слабый пароль",
+                    "Пароль не соответствует требованиям безопасности.\nВсё равно использовать?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if reply == QMessageBox.StandardButton.No:
                     return
 
             entry_id = str(uuid.uuid4())
-            self.table.add_entry(
-                entry_id=entry_id,
-                title=title,
-                username=username,
-                url=url,
-                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-                password=password
-            )
+            self.table.add_entry(entry_id, title, username, url,
+                                datetime.now().strftime("%Y-%m-%d %H:%M"), password)
             QMessageBox.information(self, "Успех", "Запись добавлена")
 
     # ------------------------
@@ -276,7 +321,6 @@ class MainWindow(QMainWindow):
                 if reply == QMessageBox.StandardButton.No:
                     return
 
-            # Обновляем данные
             entry["title"] = new_title
             entry["username"] = new_username
             entry["password"] = new_password
@@ -331,36 +375,22 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             QMessageBox.information(self, "Успех", "Пароль изменён. При следующем входе используйте новый пароль.")
 
-    #------------------------
-    # Авто-блокировка при сворачивании или потере фокуса
-    #------------------------
+    # ------------------------
+    # События (авто-блокировка)
+    # ------------------------
     def eventFilter(self, obj, event):
-        if event.type() in (event.Type.MousebuttonPress, event.Type.KeyPress):
+        if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
             if self.state_manager:
-                self.state_manager.reset_inactivity_timer()  # обновляем время последней активности
+                self.state_manager.reset_inactivity_timer()
         return super().eventFilter(obj, event)
 
-    #------------------------
-    # Авто-блокировка при сворачивании или потере фокуса
-    #------------------------
-    def event_filter(self, obj, event):
-        if event.type() in (event.Type.WindowStateChange, event.Type.ActivationChange):
+    def changeEvent(self, event):
+        if event.type() == QEvent.Type.WindowStateChange:
             if self.isMinimized() or not self.isActiveWindow():
                 if self.authenticator:
                     self.authenticator.logout()
-        return super().eventFilter(obj, event)
-
-    #------------------------
-    # Авто-блокировка при сворачивании или потере фокуса
-    #------------------------
-    def changeEvent(self, event):
-        if event.type() == event.Type.WindowStateChange:
-            if self.isMinimized() or not self.isActiveWindow():
-                # Окно свёрнуто или потеряло фокус – блокируем хранилище
-                if self.authenticator:
-                    self.authenticator.logout()   # или self.key_manager.lock()
         super().changeEvent(event)
-    
+
     # ------------------------
     # О программе
     # ------------------------
