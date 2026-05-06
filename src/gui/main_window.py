@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem, QPushButton, QHBoxLayout, QLabel, QWidget
 )
 from PyQt6.QtGui import QAction
-from PyQt6.QtCore import QEvent, QUrl
+from PyQt6.QtCore import QEvent, QUrl, QTimer
 from datetime import datetime
 import uuid
 import re
@@ -35,12 +35,14 @@ class PasswordStrengthIndicator(QLabel):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, entry_manager=None, key_manager=None, authenticator=None, state_manager=None, parent=None):
+    def __init__(self, entry_manager=None, key_manager=None, authenticator=None,
+                 state_manager=None, clipboard_service=None, parent=None):
         super().__init__(parent)
         self.entry_manager = entry_manager
         self.key_manager = key_manager
         self.authenticator = authenticator
         self.state_manager = state_manager
+        self.clipboard_service = clipboard_service  # БАГ ИСПРАВЛЕН: теперь принимаем и сохраняем
         self.installEventFilter(self)
 
         self.setWindowTitle("Secure Vault")
@@ -49,6 +51,7 @@ class MainWindow(QMainWindow):
         self._create_menu()
         self._create_central_table()
         self._create_status_bar()
+        self._start_clipboard_timer()  # запускаем живой таймер статус-бара
 
     # ------------------------
     # Вспомогательные методы
@@ -87,7 +90,7 @@ class MainWindow(QMainWindow):
         self.delete_action.triggered.connect(self._on_delete_entry)
         edit_menu.addActions([self.add_action, self.edit_action, self.delete_action])
 
-        # Безопасность (смена мастер-пароля)
+        # Безопасность
         security_menu = menu_bar.addMenu("Безопасность")
         change_pw_action = QAction("Сменить мастер-пароль", self)
         change_pw_action.triggered.connect(self._on_change_password)
@@ -118,7 +121,8 @@ class MainWindow(QMainWindow):
     # Центральная таблица с поиском
     # ------------------------
     def _create_central_table(self):
-        self.table = SecureTable()
+        # Передаём clipboard_service в таблицу для кнопок копирования (UI-1)
+        self.table = SecureTable(clipboard_service=self.clipboard_service)
 
         # Тестовые данные (только для демонстрации)
         test_entries = [
@@ -158,7 +162,36 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
         self.setStatusBar(self.status_bar)
 
-    # ------------------------
+    def _start_clipboard_timer(self):
+        self._status_timer = QTimer(self)
+        self._status_timer.setInterval(1000)
+        self._status_timer.timeout.connect(self._update_clipboard_status)
+        self._status_timer.start()
+
+    def _update_clipboard_status(self):
+        if not self.clipboard_service:
+            return
+        status = self.clipboard_service.get_clipboard_status()
+        if status.get('active'):
+            remaining = int(status.get('remaining_seconds', 0))
+            data_type = status.get('data_type', '')
+            # Предупреждение за 5 секунд (UI-3)
+            if remaining <= 5 and remaining > 0:
+                self.clipboard_status = f"⚠️ Буфер очистится через {remaining}с"
+            elif remaining > 0:
+                self.clipboard_status = f"📋 Буфер [{data_type}]: {remaining}с"
+            else:
+                self.clipboard_status = "Буфер: ---"
+        else:
+            self.clipboard_status = "Буфер: ---"
+        self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
+
+    def show_toast(self, message: str):
+        self._status_timer.stop()
+        self.status_bar.showMessage(message, 3000)
+        QTimer.singleShot(3000,self._status_timer.start)
+        
+        
     # Показать/скрыть пароли
     # ------------------------
     def _toggle_passwords(self, checked):
@@ -175,7 +208,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         form_layout = QFormLayout()
 
-        # Поля
         title_edit = QLineEdit()
         username_edit = QLineEdit()
         password_edit = QLineEdit()
@@ -184,10 +216,8 @@ class MainWindow(QMainWindow):
         notes_edit = QTextEdit()
         notes_edit.setMaximumHeight(100)
 
-        # Индикатор надёжности пароля
         strength_indicator = PasswordStrengthIndicator()
 
-        # Кнопка генерации пароля
         gen_btn = QPushButton("Сгенерировать пароль")
         password_layout = QHBoxLayout()
         password_layout.addWidget(password_edit)
@@ -213,13 +243,14 @@ class MainWindow(QMainWindow):
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
+
         layout.addLayout(form_layout)
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            title = self.sanitize_text(title_edit.text().strip(), 100)
-            username = self.sanitize_text(username_edit.text(), 255)
-            url = self.sanitize_text(url_edit.text(), 500)
+            title = self.sanitize_text(title_edit.text().strip(), max_len=100)
+            username = self.sanitize_text(username_edit.text(), max_len=255)
+            url = self.sanitize_text(url_edit.text(), max_len=500)
             password = password_edit.text()
 
             if not title:
@@ -295,14 +326,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(buttons)
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            new_title_raw = title_edit.text().strip()
-            new_username_raw = username_edit.text()
-            new_url_raw = url_edit.text()
+            new_title = self.sanitize_text(title_edit.text().strip(), max_len=100)
+            new_username = self.sanitize_text(username_edit.text(), max_len=255)
+            new_url = self.sanitize_text(url_edit.text(), max_len=500)
             new_password = password_edit.text()
-
-            new_title = self.sanitize_text(new_title_raw, max_len=100)
-            new_username = self.sanitize_text(new_username_raw, max_len=255)
-            new_url = self.sanitize_text(new_url_raw, max_len=500)
 
             if not new_title:
                 QMessageBox.warning(self, "Ошибка", "Название не может быть пустым")
@@ -313,8 +340,7 @@ class MainWindow(QMainWindow):
 
             if not PasswordValidator.validate_password_strength(new_password):
                 reply = QMessageBox.question(
-                    self,
-                    "Слабый пароль",
+                    self, "Слабый пароль",
                     "Пароль не соответствует требованиям безопасности.\nВсё равно сохранить?",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
                 )
@@ -350,9 +376,7 @@ class MainWindow(QMainWindow):
 
     def _on_delete_entry_by_id(self, entry_id: str):
         reply = QMessageBox.question(
-            self,
-            "Подтверждение",
-            "Удалить выбранную запись?",
+            self, "Подтверждение", "Удалить выбранную запись?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -395,11 +419,7 @@ class MainWindow(QMainWindow):
     # О программе
     # ------------------------
     def _show_about(self):
-        QMessageBox.information(
-            self,
-            "О программе",
-            "Secure Vault\nВерсия 0.3\nУчебный проект"
-        )
+        QMessageBox.information(self, "О программе", "Secure Vault\nВерсия 0.4\nУчебный проект")
 
     # ------------------------
     # Логи и настройки
@@ -414,5 +434,8 @@ class MainWindow(QMainWindow):
         dialog.exec()
 
     def _show_settings(self):
-        dialog = SettingsDialog()
+        # Передаём config чтобы SettingsDialog мог читать и сохранять настройки (CFG-1)
+        from core.config import ConfigManager
+        config = getattr(self, '_config', None)
+        dialog = SettingsDialog(config=config)
         dialog.exec()
