@@ -1,3 +1,8 @@
+# database.py - модуль для управления базой данных SQLite, включая пул соединений и миграции схемы. он обеспечивает безопасный и эффективный доступ к базе данных для хранения зашифрованных данных, аудита и настроек приложения. 
+# он также включает механизмы для управления транзакциями и обеспечения целостности данных при выполнении операций с базой данных.
+# он использует стандартную библиотеку sqlite3 для взаимодействия с базой данных и может
+# быть расширен для поддержки дополнительных функций, таких как резервное копирование, восстановление и оптимизация производительности.
+
 import sqlite3
 from pathlib import Path
 from queue import Queue, Empty
@@ -5,7 +10,7 @@ from contextlib import contextmanager
 from typing import Callable, List
 
 
-class DatabasePool:
+class DatabasePool: # класс для управления пулом соединений с базой данных SQLite и миграциями схемы. он обеспечивает безопасный и эффективный доступ к базе данных для хранения зашифрованных данных, аудита и настроек приложения.
     def __init__(self, db_path: str, size: int = 4):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -16,20 +21,21 @@ class DatabasePool:
 
         self._migrations: List[Callable[[sqlite3.Connection], None]] = [
             self._migration_1,
+            self._migration_2,
         ]
 
-    # ---------------- pool ----------------
-    def new_connection(self):
+    # пул соединений: методы для получения и возврата соединений с базой данных
+    def new_connection(self): # метод для создания нового соединения с базой данных. он устанавливает параметр check_same_thread в False, чтобы разрешить использование соединений в разных потоках, и устанавливает row_factory для удобного доступа к данным по именам столбцов.
         conn = sqlite3.connect(self.db_path, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _fill_pool(self):
+    def _fill_pool(self): # метод для заполнения пула соединений при инициализации. он создает указанное количество соединений и помещает их в очередь пула.
         for _ in range(self.size):
             self._pool.put(self.new_connection())
 
     @contextmanager
-    def connection(self):
+    def connection(self): # контекстный менеджер для получения соединения из пула. он пытается получить соединение из пула без блокировки, и если пул пуст, он создает новое соединение. после использования соединения он возвращает его в пул, если оно было взято из пула, или закрывает его, если оно было создано временно.
         try:
             conn = self._pool.get_nowait()
             temp = False
@@ -45,7 +51,7 @@ class DatabasePool:
             else:
                 self._pool.put(conn)
 
-    def execute(self, sql: str, params: tuple = (), commit: bool = False):
+    def execute(self, sql: str, params: tuple = (), commit: bool = False): # метод для выполнения SQL-запросов с использованием соединения из пула. он принимает SQL-запрос, параметры для запроса и флаг commit для указания, нужно ли коммитить транзакцию после выполнения запроса. он возвращает курсор с результатами запроса.
         with self.connection() as conn:
             cur = conn.cursor()
             cur.execute(sql, params)
@@ -53,7 +59,7 @@ class DatabasePool:
                 conn.commit()
             return cur
 
-    def close(self):
+    def close(self): # метод для закрытия всех соединений в пуле. он извлекает все соединения из пула и закрывает их, чтобы освободить ресурсы при завершении работы приложения.
         while not self._pool.empty():
             conn = self._pool.get_nowait()
             try:
@@ -61,34 +67,28 @@ class DatabasePool:
             except Exception:
                 pass
 
-    # ---------------- migrations ----------------
+    # схемы миграции
     def migrate(self):
         with self.connection() as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS schema_meta (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    version INTEGER NOT NULL,
-                    applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-
             cur = conn.cursor()
-            cur.execute("SELECT MAX(version) FROM schema_meta")
-            current = cur.fetchone()[0] or 0
 
+            # читаем текущую версию схемы из заголовка файла БД
+            cur.execute("PRAGMA user_version")
+            current = cur.fetchone()[0]  # 0 если БД новая
+
+        # применяем только те миграции, которые ещё не были применены
             for i in range(current, len(self._migrations)):
                 self._migrations[i](conn)
-                conn.execute(
-                    "INSERT INTO schema_meta (version) VALUES (?)",
-                    (i + 1,)
-                )
+            # записываем новую версию прямо в заголовок БД
+                conn.execute(f"PRAGMA user_version = {i + 1}")
                 conn.commit()
 
-    # ---------------- migration v1 ----------------
+    # миграция весии 1: создание таблиц для хранения зашифрованных данных, аудита и настроек приложения, а также таблицы для хранения ключей и удаленных записей. она также добавляет индексы для ускорения поиска по датам и тегам.
     def _migration_1(self, conn: sqlite3.Connection):
+        cur.execute("DROP TABLE IF EXISTS schema_meta") # удаляем старую таблицу, если она существует
         cur = conn.cursor()
 
-        # vault
+        # основная таблица хранения зашифрованных данных
         cur.execute("""
         CREATE TABLE IF NOT EXISTS vault_entries (
             id TEXT PRIMARY KEY,
@@ -99,10 +99,13 @@ class DatabasePool:
         )
         """)
         
-        cur.execute("ALTER TABLE vault_entries ADD COLUMN totp_secret TEXT")
-        cur.execute("ALTER TABLE vault_entries ADD COLUMN shared_metadata TEXT")
+        existing = {row[1] for row in cur.execute("PRAGMA table_info(vault_entries)")}
+        if "totp_secret" not in existing:
+            cur.execute("ALTER TABLE vault_entries ADD COLUMN totp_secret TEXT")
+        if "shared_metadata" not in existing:
+            cur.execute("ALTER TABLE vault_entries ADD COLUMN shared_metadata TEXT")
 
-        # audit
+        # таблица аудита для хранения логов действий пользователя и изменений данных. 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS audit_log (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -114,7 +117,7 @@ class DatabasePool:
         )
         """)
 
-        # settings
+        # таблица для хранения настроек приложения и параметров шифрования 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS settings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,7 +127,7 @@ class DatabasePool:
         )
         """)
 
-        # ---------------- KEY STORAGE (CLEAN) ----------------
+        # таблица для хранения ключей шифрования и связанных параметров. 
         cur.execute("""
         CREATE TABLE IF NOT EXISTS key_store (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +139,7 @@ class DatabasePool:
         );
         """)
 
-        # ---------------- DELETED ENTRIES (soft-delete) ----------------
+        # таблица для хранения удаленных записей с информацией о времени удаления и сроке хранения, чтобы поддерживать функцию "корзины" для восстановления удаленных данных в течение определенного времени.
         cur.execute("""
         CREATE TABLE IF NOT EXISTS deleted_entries (
             id TEXT PRIMARY KEY,
@@ -145,7 +148,7 @@ class DatabasePool:
         );
         """)
 
-        # индексы для ускорения поиска по датам и тегам (Sprint 3 DB-1)
+        # индексы для ускорения поиска по датам и тегам 
         cur.execute("""
         CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at ON vault_entries (created_at);
         """)
@@ -158,8 +161,56 @@ class DatabasePool:
 
         conn.commit()
         
+        
+    # миграция версии 2: улучшение таблицы аудита для обеспечения целостности и неизменности логов. она добавляет поля для хранения хэшей записей и цифровых подписей, а также индексы для оптимизации запросов по последовательному номеру и времени.
+    def _migration_2(self, conn: sqlite3.Connection):
+        cur = conn.cursor()
+            
+        cur.execute("ALTER TABLE audit_log RENAME TO audit_log_old")
+        cur.execute("""
+        CREATE TABLE audit_log (
+            sequence_number INTEGER PRIMARY KEY AUTOINCREMENT,
+            previous_hash TEXT NOT NULL,
+            entry_data TEXT NOT NULL,
+            entry_hash TEXT NOT NULL,
+            signature TEXT NOT NULL,
+            timestamp DATETIME NOT NULL
+        )
+        """)
+        
+        cur.execute("""
+            CREATE INDEX idx_audit_log_sequence ON audit_log (sequence_number);
+            CREATE INDEX idx_audit_log_timestamp ON audit_log (timestamp);
+        """)
+        
+        cur.execute("DROP TABLE audit_log_old")
+        
+        from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
+
+    # добавляем недостающие колонки если их нет
+        ensure_key_store_schema(conn)
+        ensure_audit_log_schema(conn)
+
+        conn.commit()
+        
+        conn.commit()
+        
+    
+    @staticmethod
+    def add_column_if_missing(conn, table: str, column: str, definition: str):
+        # получаем список существующих колонок через PRAGMA
+        cur = conn.cursor()
+        cur.execute(f"PRAGMA table_info({table})")
+        existing_columns = {row[1] for row in cur.fetchall()}
+
+        # добавляем колонку только если её ещё нет
+        if column not in existing_columns:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            
+        
     @contextmanager
-    def transaction(self):
+    def transaction(self): # контекстный менеджер для управления транзакциями с базой данных. он обеспечивает автоматическое начало транзакции при входе в блок и коммит или откат транзакции при выходе из блока в зависимости от наличия исключений. этот метод позволяет
+        #гарантировать целостность данных при выполнении нескольких связанных операций с базой данных, обеспечивая атомарность и согласованность.
         with self.connection() as conn:
             try:
                 yield conn
