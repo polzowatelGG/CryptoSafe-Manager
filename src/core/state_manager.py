@@ -1,46 +1,27 @@
+# state_manager.py - модуль для управления состоянием приложения, включая блокировку сессии, таймеры неактивности и буфер обмена. он взаимодействует с key_manager 
+# для блокировки доступа к ключам при блокировке сессии и может использоваться для автоматической блокировки после определенного времени неактивности. 
 import threading
 
 class StateManager:
     def __init__(self, config, key_manager=None):
         self.config = config
         self.key_manager = key_manager
-        self.session_locked = False
-        self.clipboard = None
-        self.clipboard_timer = None
+        self.session_locked = False 
         self.inactivity_timer = None
+        self.inactivity_timeout = config.get_preference('inactivity_timeout') or 300
 
-        self.clipboard_timeout = self.config.get_preference("clipboard_timeout")
-        auto_lock = self.config.get_preference("auto_lock")
-        self.inactivity_timeout = self.clipboard_timeout * 5 if auto_lock else None
-
-    def lock(self):
+    def lock(self): #метод для блокировки сессии. он устанавливает состояние как заблокированное и блокирует доступ к ключам через key_manager. этот метод должен быть вызван при выходе пользователя, при блокировке приложения или при истечении времени неактивности.
         self.session_locked = True
         if self.key_manager:
             self.key_manager.lock()   # блокируем доступ к ключам
 
-    def unlock(self):
+    def unlock(self): #метод для разблокировки сессии. он устанавливает состояние как разблокированное и может быть вызван после успешного входа пользователя. он также может запускать таймер неактивности для автоматической блокировки после определенного времени.
         self.session_locked = False
 
-    def is_locked(self):
+    def is_locked(self): #метод для проверки, заблокирована ли сессия. он возвращает True, если сессия заблокирована, и False в противном случае. он может использоваться в других частях приложения для проверки состояния блокировки перед выполнением действий, требующих доступа к ключам или другим защищенным ресурсам.
         return self.session_locked
 
-    def set_clipboard(self, data):
-        self.clipboard = data
-        self.start_clipboard_timer()
-
-    def get_clipboard(self):
-        return self.clipboard
-
-    def clear_clipboard(self):
-        self.clipboard = None
-
-    def start_clipboard_timer(self):
-        if self.clipboard_timer:
-            self.clipboard_timer.cancel()
-        self.clipboard_timer = threading.Timer(self.clipboard_timeout, self.clear_clipboard)
-        self.clipboard_timer.start()
-
-    def reset_inactivity_timer(self):
+    def reset_inactivity_timer(self): #метод для сброса таймера неактивности. он останавливает существующий таймер, если он запущен, и запускает новый таймер с заданным временем, после которого будет вызван метод lock для блокировки сессии из-за неактивности. этот метод должен быть вызван при каждом взаимодействии пользователя с приложением, чтобы предотвратить автоматическую блокировку во время активного использования.
         if self.inactivity_timer:
             self.inactivity_timer.cancel()
         if self.inactivity_timeout:
