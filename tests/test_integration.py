@@ -41,11 +41,10 @@ def test_main_window_import():
     assert MainWindow is not None
 
 def test_main_window_accepts_entry_manager(qapp, tmp_path):
-    # создаём временную БД и настраиваем KeyManager и EntryManager
     db_file = tmp_path / "test.db"
     pool = DatabasePool(str(db_file))
     pool.migrate()
-    
+
     key_storage = KeyStorage(pool)
     key_manager = KeyManager(key_storage, {
         "argon2_time": 3,
@@ -53,9 +52,62 @@ def test_main_window_accepts_entry_manager(qapp, tmp_path):
         "argon2_parallelism": 4,
         "pbkdf2_iterations": 100000,
     })
-    key_manager.initialize("testpass")
-    key_manager.unlock("testpass")
-    
+    key_manager.initialize("StrongPass123!")
+    key_manager.unlock("StrongPass123!")
+
     entry_manager = EntryManager(pool, key_manager)
     entry_manager.create_entry({"title": "Test", "password": "123"})
-    pass
+
+    window = MainWindow(entry_manager=entry_manager)
+
+    assert window.entry_manager is not None
+
+    window._load_entries()
+    assert window.secure_table.rowCount() == 1
+
+def test_main_window_creation(qapp, tmp_path):
+    db_file = tmp_path / "test.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+    key_manager.initialize("StrongPass123!")
+    key_manager.unlock("StrongPass123!")
+
+    entry_manager = EntryManager(pool, key_manager)
+
+    window = MainWindow(entry_manager=entry_manager)
+    assert window is not None
+    
+def test_main_window_opens_without_errors(qapp, tmp_path):
+    db_file = tmp_path / "test.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+    key_manager.initialize("StrongPass123!")
+    key_manager.unlock("StrongPass123!")
+
+    entry_manager = EntryManager(pool, key_manager)
+    window = MainWindow(entry_manager=entry_manager)
+    window.show()
+
+    assert window.isVisible()
+
+    assert window.statusBar() is not None
+
+    assert window.menuBar() is not None
+
+    window.close()
