@@ -1,4 +1,5 @@
-
+# этот файл содержит реализацию шины событий и заглушки для аудита. он определяет константы для различных типов событий, таких как добавление, обновление и удаление записей, вход и выход пользователей, а также операции с буфером обмена. 
+# класс EventBus обеспечивает простой механизм подписки на события и публикации их с помощью потокобезопасного словаря обработчиков. класс AuditLogger является заглушкой для аудита, который подписывается на события и записывает простые строки в лог-файл с отметкой времени. он создаётся при импорте модуля, чтобы сразу ловить события.
 from datetime import datetime
 from pathlib import Path
 import threading
@@ -52,15 +53,18 @@ class EventBus:
 # глобальная шина - 
 _bus = EventBus()
 
-def subscribe(event: str, handler: Callable[..., None]) -> None:
+def subscribe(event: str, handler: Callable[..., None]) -> None: #подписка на событие. принимает имя события и обработчик, который будет вызван при публикации этого события. он добавляет обработчик в список подписчиков для данного события в глобальной шине событий.
+    #он обеспечивает потокобезопасность при добавлении обработчика, используя блокировку. если обработчик уже подписан на это событие, он не будет добавлен повторно.
     _bus.subscribe(event, handler)
 
 
-def unsubscribe(event: str, handler: Callable[..., None]) -> None:
+def unsubscribe(event: str, handler: Callable[..., None]) -> None: #отписка от события. принимает имя события и обработчик, который нужно удалить из списка подписчиков для данного события в глобальной шине событий. 
+    #он удаляет обработчик из списка подписчиков для данного события, если он там есть.
     _bus.unsubscribe(event, handler)
 
 
-def publish(event: str, **kwargs: Any) -> None:
+def publish(event: str, **kwargs: Any) -> None: #публикация события. принимает имя события и дополнительные аргументы, которые будут переданы обработчикам. 
+    #он вызывает метод publish глобальной шины событий, который копирует список обработчиков для данного события и вызывает их с переданными аргументами.
     _bus.publish(event, **kwargs)
 
 
@@ -89,25 +93,25 @@ class AuditLogger:
         except Exception:
             pass
 
-    def on_entry_added(self, entry_id: str = "") -> None:
+    def on_entry_added(self, entry_id: str = "") -> None: #метод для обработки события добавления записи. 
         self._write(f"EntryAdded id={entry_id}")
 
-    def on_entry_updated(self, entry_id: str = "") -> None:
+    def on_entry_updated(self, entry_id: str = "") -> None: #метод для обработки события обновления записи. 
         self._write(f"EntryUpdated id={entry_id}")
 
-    def on_entry_deleted(self, entry_id: str = "") -> None:
+    def on_entry_deleted(self, entry_id: str = "") -> None: #метод для обработки события удаления записи.
         self._write(f"EntryDeleted id={entry_id}")
 
-    def on_user_logged_in(self, user_id: str = "") -> None:
+    def on_user_logged_in(self, user_id: str = "") -> None: #метод для обработки события входа пользователя. 
         self._write(f"UserLoggedIn user={user_id}")
 
-    def on_user_logged_out(self, user_id: str = "") -> None:
+    def on_user_logged_out(self, user_id: str = "") -> None: #метод для обработки события выхода пользователя.
         self._write(f"UserLoggedOut user={user_id}")
 
-    def on_clipboard_copied(self, entry_id: str = "") -> None:
+    def on_clipboard_copied(self, entry_id: str = "") -> None: #метод для обработки события копирования в буфер обмена. 
         self._write(f"ClipboardCopied id={entry_id}")
 
-    def on_clipboard_cleared(self) -> None:
+    def on_clipboard_cleared(self) -> None: #метод для обработки события очистки буфера обмена.
         self._write("ClipboardCleared")
 
 
