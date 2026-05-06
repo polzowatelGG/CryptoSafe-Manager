@@ -1,18 +1,14 @@
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QAction
-from PyQt6.QtWidgets import (
-    QTableWidget,
-    QTableWidgetItem,
-    QMenu,
-    QHeaderView,
-)
+from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QMenu, QHeaderView, QMessageBox
 
 class SecureTable(QTableWidget):
     entry_edit_requested = pyqtSignal(str)
     entry_delete_requested = pyqtSignal(str)
-    
-    def __init__(self, parent=None):
+
+    def __init__(self, parent=None, clipboard_service=None):
         super().__init__(parent)
+        self.clipboard_service = clipboard_service
 
         self.entries = []
         self.show_passwords = False
@@ -85,13 +81,30 @@ class SecureTable(QTableWidget):
         entry_id = self.entries[row]["id"]
 
         menu = QMenu(self)
+
+        # Редактирование / удаление
         edit_action = QAction("Изменить", self)
         delete_action = QAction("Удалить", self)
+        edit_action.triggered.connect(lambda: self.entry_edit_requested.emit(entry_id))
+        delete_action.triggered.connect(lambda: self.entry_delete_requested.emit(entry_id))
         menu.addAction(edit_action)
         menu.addAction(delete_action)
 
-        edit_action.triggered.connect(lambda: self.entry_edit_requested.emit(entry_id))
-        delete_action.triggered.connect(lambda: self.entry_delete_requested.emit(entry_id))
+        menu.addSeparator()
+
+        copy_pw_action = QAction("📋 Копировать пароль", self)
+        copy_pw_action.triggered.connect(lambda: self._copy_password(entry_id))
+        menu.addAction(copy_pw_action)
+
+        copy_user_action = QAction("📋 Копировать логин", self)
+        copy_user_action.triggered.connect(lambda: self._copy_username(entry_id))
+        menu.addAction(copy_user_action)
+
+        copy_all_action = QAction("📋 Копировать всё (пароль)", self)
+        copy_all_action.triggered.connect(lambda: self._copy_password(entry_id))
+        menu.addAction(copy_all_action)
+
+        menu.addSeparator()
 
         show_pw_action = QAction("👁️ Показать пароль", self)
         show_pw_action.triggered.connect(lambda: self._show_single_password(entry_id))
@@ -99,11 +112,75 @@ class SecureTable(QTableWidget):
 
         menu.exec(self.viewport().mapToGlobal(pos))
 
+    def _get_entry(self, entry_id: str) -> dict:
+        for e in self.entries:
+            if e["id"] == entry_id:
+                return e
+        return None
+
+    def _copy_password(self, entry_id: str):
+        entry = self._get_entry(entry_id)
+        if not entry:
+            return
+        password = entry.get("password", "")
+        if not password:
+            QMessageBox.information(self, "Информация", "Пароль не задан")
+            return
+        if self.clipboard_service:
+            try:
+                self.clipboard_service.copy_to_clipboard(
+                    data=password,
+                    data_type="password",
+                    source_entry_id=entry_id
+                )
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Ошибка", str(e))
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(password)
+
+    def _copy_username(self, entry_id: str):
+        entry = self._get_entry(entry_id)
+        if not entry:
+            return
+        username = entry.get("username", "")
+        if not username:
+            QMessageBox.information(self, "Информация", "Логин не задан")
+            return
+        if self.clipboard_service:
+            try:
+                self.clipboard_service.copy_to_clipboard(
+                    data=username,
+                    data_type="username",
+                    source_entry_id=entry_id
+                )
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Ошибка", str(e))
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(username)
+
+    def _show_single_password(self, entry_id: str):
+        entry = self._get_entry(entry_id)
+        if not entry:
+            return
+
+        password = entry.get("password", "")
+        if not password:
+            QMessageBox.information(self, "Информация", "Пароль не задан")
+            return
+
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Пароль")
+        msg.setText(f"Пароль для записи:\n\n{password}")
+        msg.setInformativeText("Это окно закроется автоматически через 30 секунд.")
+        msg.setStandardButtons(QMessageBox.StandardButton.Ok)
+        QTimer.singleShot(30000, msg.accept)
+        msg.exec()
+
     def clear_entries(self):
         self.entries.clear()
         self.setRowCount(0)
-        
-        # Добавьте этот метод в класс SecureTable (после __init__ или в любом месте)
 
     def get_selected_entry_id(self):
         selected = self.selectedItems()
@@ -113,3 +190,38 @@ class SecureTable(QTableWidget):
         if row < len(self.entries):
             return self.entries[row]["id"]
         return None
+
+    def filter_entries(self, search_text: str):
+        if not search_text.strip():
+            for row in range(self.rowCount()):
+                self.setRowHidden(row, False)
+            return
+
+        filters = {}
+        words = search_text.split()
+        for word in words:
+            if ':' in word:
+                field, value = word.split(':', 1)
+                if field in ('title', 'username', 'url', 'notes'):
+                    filters[field] = value.lower()
+            else:
+                filters.setdefault('any', []).append(word.lower())
+
+        for row, entry in enumerate(self.entries):
+            visible = True
+            for field, val in filters.items():
+                if field == 'any':
+                    continue
+                field_value = entry.get(field, '').lower()
+                if val not in field_value:
+                    visible = False
+                    break
+            if visible and 'any' in filters:
+                haystack = (entry.get('title', '') + ' ' +
+                            entry.get('username', '') + ' ' +
+                            entry.get('url', '') + ' ' +
+                            entry.get('notes', '')).lower()
+                if not any(any_word in haystack for any_word in filters['any']):
+                    visible = False
+
+            self.setRowHidden(row, not visible)

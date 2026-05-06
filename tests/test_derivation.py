@@ -78,7 +78,9 @@ class Authenticator:
             password = None
 
     def _calculate_delay(self) -> int:
-        if 1 <= self.failed_attempts <= 2:
+        if self.failed_attempts == 0:
+            return 0         
+        elif 1 <= self.failed_attempts <= 2:
             return 1
         elif 3 <= self.failed_attempts <= 4:
             return 5

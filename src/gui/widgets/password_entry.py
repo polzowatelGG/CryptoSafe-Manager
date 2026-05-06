@@ -1,4 +1,3 @@
-# src/gui/widgets/password_entry.py
 from PyQt6.QtWidgets import QWidget, QLineEdit, QPushButton, QHBoxLayout
 
 

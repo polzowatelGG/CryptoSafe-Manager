@@ -1,3 +1,8 @@
+# Модуль для определения моделей данных и репозиториев для работы с базой данных. он содержит классы и функции для управления данными в таблицах базы данных, 
+# таких как журнал аудита, настройки приложения и хранилище ключей. эти модели обеспечивают абстрактный интерфейс для взаимодействия с базой данных, позволяя легко сохранять, 
+# извлекать и управлять данными, связанными с безопасностью и конфиденциальностью в приложении. они также обеспечивают поддержку шифрования для чувствительных 
+# данных и ведение журнала аудита для отслеживания действий пользователей и изменений в данных.
+
 import sqlite3
 from datetime import datetime
 import base64
@@ -45,8 +50,8 @@ class Settings:
         if encrypted:
             if not enc_key:
                 raise ValueError("enc_key required for encrypted setting")
-            blob = self.encryptor.encrypt(value.encode("utf-8"), enc_key)
-            value_stored = base64.b64encode(blob).decode("ascii")
+            blob = self.encryptor.encrypt(value.encode("utf-8"), enc_key) # шифруем значение с помощью предоставленного ключа
+            value_stored = base64.b64encode(blob).decode("ascii") # сохраняем зашифрованное значение в виде строки base64 для удобства хранения в текстовом поле базы данных
             enc_flag = 1
         else:
             value_stored = value
@@ -107,22 +112,14 @@ class KeyStore:
             conn.commit()
             return cur.lastrowid
 
-    def list_keys(self) -> List[Dict[str, Any]]:
-        # возвращает список хранимых ключевых записей
+    def list_keys(self) -> List[Dict[str, Any]]: # возвращает список хранимых ключевых записей
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute("SELECT id, key_type, key_data, version, created_at FROM key_store")
             rows = cur.fetchall()
             return [dict(r) for r in rows]
 
-    def list_keys(self) -> List[Dict[str, Any]]:
-        with self.pool.connection() as conn:
-            cur = conn.cursor()
-            cur.execute("SELECT id, key_type, key_data, version, created_at FROM key_store")
-            rows = cur.fetchall()
-            return [dict(r) for r in rows]
-
-    def get_latest_key(self, key_type: str):
+    def get_latest_key(self, key_type: str): # получает последнюю версию ключа для данного типа
         with self.pool.connection() as conn:
             cur = conn.cursor()
             cur.execute(

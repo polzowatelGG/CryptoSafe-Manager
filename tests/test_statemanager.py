@@ -4,7 +4,7 @@ from core.config import ConfigManager
 
 
 class DummyTimer:
-    def __init__(self, timeout, func): # заглушка для threading.Timer, которая просто сохраняет функцию и флаг запуска
+    def __init__(self,timeout, func):
         self.timeout = timeout
         self.func = func
         self.started = False

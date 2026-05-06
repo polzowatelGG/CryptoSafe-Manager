@@ -1,29 +1,28 @@
 from PyQt6.QtWidgets import (
-    QDialog,
-    QVBoxLayout,
-    QTabWidget,
-    QWidget,
-    QFormLayout,
-    QSpinBox,
-    QCheckBox,
-    QComboBox,
-    QPushButton,
-    QHBoxLayout,
-    QLabel,
+    QDialog, QVBoxLayout, QTabWidget, QWidget, QFormLayout,
+    QSpinBox, QCheckBox, QComboBox, QPushButton, QHBoxLayout, QLabel,
 )
 
-class SettingsDialog(QDialog):
-    def __init__(self):
-        super().__init__()
 
+class SettingsDialog(QDialog):
+    def __init__(self, config=None):
+        super().__init__()
+        self.config = config  
         self.setWindowTitle("Настройки")
         self.resize(500, 400)
-
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(["Стандарт (30с)", "Безопасный (15с)", "Публичный ПК (5с)"])
+        self.profile_combo.currentIndexChanged.connect(self._apply_profile)
         self._init_ui()
+        self._load_settings()  # загружаем текущие значения из config
+
+    def _apply_profile(self, index):
+        timeouts = [30, 15, 5]
+        self.clipboard_timeout.setValue(timeouts[index])
 
     def _init_ui(self):
         layout = QVBoxLayout()
-
+        
         self.tabs = QTabWidget()
         self.tabs.addTab(self._create_security_tab(), "Безопасность")
         self.tabs.addTab(self._create_appearance_tab(), "Внешний вид")
@@ -31,12 +30,11 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(self.tabs)
 
-        # Кнопки
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
 
         self.save_btn = QPushButton("Сохранить")
-        self.save_btn.clicked.connect(self.accept)
+        self.save_btn.clicked.connect(self._save_and_accept) 
 
         self.cancel_btn = QPushButton("Отмена")
         self.cancel_btn.clicked.connect(self.reject)
@@ -45,15 +43,12 @@ class SettingsDialog(QDialog):
         btn_layout.addWidget(self.cancel_btn)
 
         layout.addLayout(btn_layout)
-
         self.setLayout(layout)
 
-    # ------------------------
-    # Вкладка Безопасность
-    # ------------------------
     def _create_security_tab(self):
         tab = QWidget()
         layout = QFormLayout()
+        layout.addRow("Профиль:", self.profile_combo)
 
         self.clipboard_timeout = QSpinBox()
         self.clipboard_timeout.setRange(5, 300)
@@ -68,9 +63,6 @@ class SettingsDialog(QDialog):
         tab.setLayout(layout)
         return tab
 
-    # ------------------------
-    # Вкладка Внешний вид
-    # ------------------------
     def _create_appearance_tab(self):
         tab = QWidget()
         layout = QFormLayout()
@@ -87,9 +79,6 @@ class SettingsDialog(QDialog):
         tab.setLayout(layout)
         return tab
 
-    # ------------------------
-    # Вкладка Дополнительно
-    # ------------------------
     def _create_advanced_tab(self):
         tab = QWidget()
         layout = QVBoxLayout()
@@ -105,3 +94,17 @@ class SettingsDialog(QDialog):
         tab.setLayout(layout)
         return tab
 
+    def _load_settings(self):
+        if not self.config:
+            return
+        timeout = self.config.get('clipboard_timeout', 30)
+        self.clipboard_timeout.setValue(int(timeout))
+
+        auto_lock = self.config.get('auto_lock', True)
+        self.auto_lock_checkbox.setChecked(bool(auto_lock))
+
+    def _save_and_accept(self):
+        if self.config:
+            self.config.set_preference('clipboard_timeout', self.clipboard_timeout.value())
+            self.config.set_preference('auto_lock', self.auto_lock_checkbox.isChecked())
+        self.accept()

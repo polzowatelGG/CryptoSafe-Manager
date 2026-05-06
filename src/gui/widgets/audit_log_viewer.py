@@ -1,4 +1,4 @@
-# src/gui/widgets/audit_log_viewer.py
+
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, QLabel
 
 
@@ -16,7 +16,7 @@ class AuditLogViewer(QWidget):
         self.table.setHorizontalHeaderLabels(["Время", "Событие", "Пользователь"])
         layout.addWidget(self.table)
 
-        # Тестовые данные
+        # тестовые данные
         test_data = [
             ("12:00", "Вход выполнен", "admin"),
             ("12:05", "Добавлена запись", "admin"),
