@@ -31,6 +31,41 @@
 | Спринт 8 | Резервное копирование, финальная сборка и Docker |
 
 
+## Установка и запуск
+
+### Требования
+- Python 3.12+
+- pip
+
+### 1. Клонирование репозитория
+```bash
+git clone https://github.com/your-username/cryptosafe-manager.git
+cd cryptosafe-manager
+```
+
+### 2. Создание виртуального окружения
+```bash
+python -m venv venv
+```
+
+Активация:
+- **macOS / Linux:** `source venv/bin/activate`
+- **Windows:** `venv\Scripts\activate`
+
+### 3. Установка зависимостей
+```bash
+pip install -r requirements.txt
+```
+
+### 4. Запуск приложения
+```bash
+python src/app.py
+```
+
+### 5. Запуск тестов
+```bash
+pytest tests/
+```
 
            +----------------+
            |   GUI (View)   |
