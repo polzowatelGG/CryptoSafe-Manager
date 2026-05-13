@@ -5,6 +5,9 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
 import core.events as events
 
+_NONCE_SIZE = 12
+_TAG_SIZE   = 16
+
 class EntryManager:
     def __init__(self, db_connection, key_manager, event_system=None):
         self.db = db_connection
@@ -28,19 +31,21 @@ class EntryManager:
         nonce = os.urandom(12)
         plaintext = json.dumps(data).encode("utf-8")
 
-        ciphertext = aesgcm.encrypt(nonce, plaintext, None)
+        # возвращает ciphertext + tag (16Б)
+        ciphertext_and_tag = aesgcm.encrypt(nonce, plaintext, None)
 
-        return nonce + ciphertext
+        # blob = nonce + ciphertext + tag
+        return nonce + ciphertext_and_tag
 
     # дешифрование
     def _decrypt(self, encrypted_blob: bytes, key: bytes = None) -> dict:
         aesgcm = self._get_crypto(key)
 
-        nonce = encrypted_blob[:12]
-        ciphertext = encrypted_blob[12:]
+        nonce = encrypted_blob[:_NONCE_SIZE]
+        ciphertext_and_tag = encrypted_blob[_NONCE_SIZE:]
 
         try:
-            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
+            plaintext = aesgcm.decrypt(nonce, ciphertext_and_tag, None)
         except Exception:
             raise ValueError("Decryption failed (corrupted data or wrong key)")
 
@@ -51,14 +56,28 @@ class EntryManager:
         entry_id = str(uuid.uuid4())
 
         payload = {
-            **data,
-            "id": entry_id,
-            "created_at": datetime.utcnow().isoformat(),
-            "updated_at": datetime.utcnow().isoformat(),
-            "version": 1,
-            "totp_secret": data.get("totp_secret"),      # новый
-            "shared_metadata": data.get("shared_metadata")  # новый
-        }
+        # чтобы структура записи была предсказуемой всегда
+        "title":           data.get("title", ""),
+        "username":        data.get("username", ""),
+        "password":        data.get("password", ""),
+        "url":             data.get("url", ""),
+        "notes":           data.get("notes", ""),
+        "category":        data.get("category", ""),    
+
+        # для будущих спринтов
+        "totp_secret":     data.get("totp_secret"),
+        "shared_metadata": data.get("shared_metadata"),
+
+        # служебные поля — всегда проставляются сервером
+        "id":         entry_id,
+        "created_at": datetime.utcnow().isoformat(),
+        "updated_at": datetime.utcnow().isoformat(),
+        "version":    1,
+
+        # теги хранятся отдельно в БД для индексирования (DATA-1)
+        # но также включаются в зашифрованный payload для целостности
+        "tags":       data.get("tags", ""),
+ }
 
         encrypted_blob = self._encrypt(payload)
 
@@ -195,3 +214,13 @@ class EntryManager:
                 "UPDATE vault_entries SET encrypted_data = ?, updated_at = ? WHERE id = ?",
                 (new_blob, datetime.utcnow(), row["id"]),
             )
+
+    @staticmethod
+    def secure_wipe_list(entries: list):
+        # явно затираем расшифрованные данные из памяти
+        # после того как они переданы в GUI для отображения
+        for entry in entries:
+            for key in list(entry.keys()):
+                entry[key] = None
+            entry.clear()
+        entries.clear()
