@@ -14,9 +14,24 @@ class ClipboardMonitor:
         self._own_change_count = None 
         
     def start(self): # запускаем мониторинг в отдельном потоке
-        self._running = True
-        self._thread = threading.Thread(target= self._loop, daemon= True)
-        self._thread.start()
+        try:
+            # проверяем что платформа поддерживает get_change_count()
+            self._platform.get_change_count()
+
+            self._running = True
+            self._thread = threading.Thread(target=self._loop, daemon=True)
+            self._thread.start()
+            return True
+
+        except Exception as e:
+            # мониторинг недоступен — предупреждаем но продолжаем работу
+            self._service._show_notification(
+                "⚠️ Мониторинг буфера обмена недоступен на этой платформе. "
+                "Защита от внешнего доступа отключена."
+            )
+            self._service._log_error("MONITOR_START_FAILED", str(e))
+            return False
+
     
     def stop(self): # останавливаем мониторинг
         self._running = False
@@ -26,13 +41,16 @@ class ClipboardMonitor:
         
     def _loop(self): # основной цикл мониторинга, который периодически проверяет счётчик изменений буфера обмена
         while self._running:
-            time.sleep(0.5)
-            if self._own_change_count is None:
-                continue
-            current = self._platform.get_change_count()
-            if current != self._own_change_count:
-                self._own_change_count = None
-                self._service._clear_clipboard()
-                self._service._show_notification("Буфер изменён извне — очищено")
-
-    
+            try:
+                time.sleep(0.5)
+                if self._own_change_count is None:
+                    continue
+                current = self._platform.get_change_count()
+                if current != self._own_change_count:
+                    self._own_change_count = None
+                    self._service._clear_clipboard()
+                    self._service.on_suspicious_access()
+            
+            except Exception as e:
+                self._service._log_error("MONITOR_LOOP_FAILED", str(e))
+                time.sleep(1.0) # при ошибке делаем паузу, чтобы не спамить лог и не перегружать систему
