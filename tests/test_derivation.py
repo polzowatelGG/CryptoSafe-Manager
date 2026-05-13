@@ -7,7 +7,8 @@ from core.events import EventBus
 from core.crypto.key_storage import KeyStorage
 from core.key_manager import KeyManager
 from database.db import DatabasePool
-
+import time
+import statistics
 
 class Authenticator:
     def __init__(
@@ -116,18 +117,35 @@ def test_change_password_with_reencrypt(tmp_path: Path):
     assert key_manager.unlock("OldPassword123!")
 
     entry_manager = EntryManager(pool, key_manager)
-    entry_id = entry_manager.create_entry({"title": "A", "login": "u", "password": "p"})
+    
+    ids = []
+    for i in range(10):
+        eid = entry_manager.create_entry({
+            "title":    f"Entry{i}",
+            "username": f"user{i}",
+            "password": f"pass{i}",
+            "url":      f"https://site{i}.com",
+            "notes":    f"Note {i}",
+            "category": "Test",
+        })
+        ids.append(eid)
 
-    key_manager.change_password("OldPassword123!", "NewPassword123!", entry_manager)
+    assert len(ids) == 10
+    
+    key_manager.change_password("OldPassword123!", "NewPassword456!", entry_manager)
 
     key_manager.lock()
-    assert not key_manager.is_unlocked()
+    assert key_manager.unlock("NewPassword456!"), "Новый пароль не работает"
 
-    assert key_manager.unlock("NewPassword123!")
+    for i, eid in enumerate(ids):
+        entry = entry_manager.get_entry(eid)
+        assert entry["title"]    == f"Entry{i}",    f"title повреждён у записи {i}"
+        assert entry["username"] == f"user{i}",     f"username повреждён у записи {i}"
+        assert entry["password"] == f"pass{i}",     f"password повреждён у записи {i}"
+        assert entry["url"]      == f"https://site{i}.com", f"url повреждён у записи {i}"
 
-    entry = entry_manager.get_entry(entry_id)
-    assert entry["title"] == "A"
-    assert entry["login"] == "u"
+    key_manager.lock()
+    assert not key_manager.unlock("OldPassword123!"), "Старый пароль не должен работать"
 
 
 def test_keychain_fallback_store_load(tmp_path: Path, monkeypatch: MonkeyPatch):
@@ -161,3 +179,49 @@ def test_key_derivation_consistency():
     first = keys[0]
     for key in keys[1:]:
         assert key == first
+        
+def test_timing_attack_resistance():
+    # проверяем что verify_password() выполняется
+    # за статистически одинаковое время для правильного
+    # и неправильного пароля — защита от timing attack
+    import statistics
+
+    config = {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    }
+    kd = KeyDerivation(config)
+
+    correct_password = "CorrectPass123!"
+    wrong_password   = "WrongPass123!!"
+
+    stored_hash = kd.create_auth_hash(correct_password)
+
+    runs = 10
+
+    correct_times = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        kd.verify_password(correct_password, stored_hash)
+        correct_times.append(time.perf_counter() - start)
+
+    wrong_times = []
+    for _ in range(runs):
+        start = time.perf_counter()
+        kd.verify_password(wrong_password, stored_hash)
+        wrong_times.append(time.perf_counter() - start)
+
+    correct_median = statistics.median(correct_times)
+    wrong_median   = statistics.median(wrong_times)
+
+    larger = max(correct_median, wrong_median)
+    diff   = abs(correct_median - wrong_median)
+
+    assert diff / larger < 0.20, (
+        f"Подозрение на timing attack: "
+        f"правильный={correct_median:.4f}с, "
+        f"неправильный={wrong_median:.4f}с, "
+        f"разница={diff/larger*100:.1f}%"
+    )
