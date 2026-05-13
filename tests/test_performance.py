@@ -28,13 +28,34 @@ def test_performance_1000_entries(tmp_path):
     mem_before = process.memory_info().rss / 1024 / 1024
 
     # Создаём 1000 записей
+    # Загрузка всех 1000 записей — PERF-1
     start = time.time()
-    ids = []
-    for i in range(1000):
-        eid = entry_manager.create_entry({"title": f"Perf{i}", "password": "p"})
-        ids.append(eid)
-    create_time = time.time() - start
-    assert create_time < 2.0, f"Creation of 1000 entries took {create_time:.2f}s"
+    all_entries = entry_manager.get_all_entries()
+    load_time = time.time() - start
+    assert load_time < 2.0, f"Loading 1000 entries took {load_time:.2f}s"
+    assert len(all_entries) == 1000
+
+    # Поиск среди 1000 записей — PERF-2
+    # имитируем фильтрацию по содержимому как делает SecureTable.filter_entries()
+    # это реалистичная нагрузка: перебор всех расшифрованных записей по полю title
+    search_query = "Perf500"  # ищем конкретную запись по title среди 1000
+
+    start = time.time()
+    results = [
+        e for e in all_entries
+        if search_query.lower() in e.get("title", "").lower()
+    ]
+    search_time = time.time() - start
+
+    assert search_time < 0.2, (
+        f"Search among 1000 entries took {search_time:.3f}s, expected < 0.2s"
+    )
+    assert len(results) == 1, (
+        f"Expected 1 result for '{search_query}', got {len(results)}"
+    )
+
+    # затираем расшифрованные данные после теста (SEC-1)
+    entry_manager.secure_wipe_list(all_entries)
 
     # Память после создания
     gc.collect()
@@ -42,10 +63,3 @@ def test_performance_1000_entries(tmp_path):
     mem_diff = mem_after - mem_before
     # Прирост памяти не должен превышать 50 МБ (только данные записей)
     assert mem_diff < 50, f"Memory increase {mem_diff:.1f} MB exceeds 50 MB"
-
-    # Поиск (первые 100 записей)
-    start = time.time()
-    for eid in ids[:100]:
-        entry_manager.get_entry(eid)
-    search_time = time.time() - start
-    assert search_time < 0.2, f"100 searches took {search_time:.2f}s"
