@@ -111,3 +111,12 @@ def test_main_window_opens_without_errors(qapp, tmp_path):
     assert window.menuBar() is not None
 
     window.close()
+    
+def test_clipboard_timeout_persists(tmp_path):
+    # сохраняем таймаут
+    cfg1 = ConfigManager(str(tmp_path / "cfg.json"))
+    cfg1.set_preference('clipboard_timeout', 15)
+
+    # создаём новый экземпляр — читает с диска
+    cfg2 = ConfigManager(str(tmp_path / "cfg.json"))
+    assert cfg2.get_preference('clipboard_timeout') == 15
