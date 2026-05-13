@@ -39,7 +39,15 @@ def test_entry_manager_crud_events(tmp_path):
 
     em = EntryManager(pool, km, event_system=events)
 
-    entry_id = em.create_entry({"title": "Site", "username": "user", "password": "pass", "url": "https://site", "notes": "note", "tags": "test"})
+    entry_id = em.create_entry({
+        "title": "Site", "username": "user",
+        "password": "pass", "url": "https://site",
+        "notes": "note", "tags": "test"
+    })
+    
+    entry = em.get_entry(entry_id)
+    assert "category" in entry
+    assert entry["category"] == ""  # дефолт если не передан
     assert entry_id
 
     assert em.get_entry(entry_id)["title"] == "Site"
@@ -128,3 +136,88 @@ def test_crud_100_entries(tmp_path):
     for entry in remaining:
         assert "title" in entry
         assert "password" in entry
+
+def test_encryption_cycle(tmp_path):
+    # инициализация окружения
+    db_file = tmp_path / "enc_cycle.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+    key_manager.initialize("StrongPass123!")
+    key_manager.unlock("StrongPass123!")
+
+    entry_manager = EntryManager(pool, key_manager)
+
+    # создаём запись с известными данными
+    known_data = {
+        "title":    "MyBank",
+        "username": "john@example.com",
+        "password": "SuperSecret99!",
+        "url":      "https://mybank.com",
+        "notes":    "Personal account",
+        "category": "Finance",
+    }
+    entry_id = entry_manager.create_entry(known_data)
+    assert entry_id
+
+    # читаем сырой BLOB из БД и проверяем
+    # что открытый текст в нём не присутствует
+    with pool.connection() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT encrypted_data FROM vault_entries WHERE id = ?",
+            (entry_id,)
+        )
+        row = cur.fetchone()
+
+    assert row is not None
+    raw_blob = row["encrypted_data"]
+
+    # blob должен быть байтами, не строкой
+    assert isinstance(raw_blob, bytes)
+
+    # blob должен быть длиннее nonce(12) + tag(16) = минимум 28 байт
+    assert len(raw_blob) > 28
+
+    # ни одно из чувствительных полей не должно читаться в blob как UTF-8 текст
+    # пробуем декодировать — если получится и там есть открытый текст, тест падает
+    sensitive_values = [
+        known_data["title"],
+        known_data["username"],
+        known_data["password"],
+        known_data["url"],
+        known_data["notes"],
+        known_data["category"],
+    ]
+    try:
+        blob_as_text = raw_blob.decode("utf-8")
+        # если декодировалось — проверяем что ни одного значения там нет
+        for value in sensitive_values:
+            assert value not in blob_as_text, (
+                f"Открытый текст '{value}' найден в зашифрованном BLOB — "
+                f"шифрование не работает!"
+            )
+    except UnicodeDecodeError:
+        # blob не декодируется как UTF-8 — это ожидаемо для зашифрованных данных
+        pass
+
+    # расшифровываем и проверяем целостность данных
+    decrypted = entry_manager.get_entry(entry_id)
+
+    assert decrypted["title"]    == known_data["title"]
+    assert decrypted["username"] == known_data["username"]
+    assert decrypted["password"] == known_data["password"]
+    assert decrypted["url"]      == known_data["url"]
+    assert decrypted["notes"]    == known_data["notes"]
+    assert decrypted["category"] == known_data["category"]
+
+    # версия и id должны быть проставлены автоматически
+    assert decrypted["version"] == 1
+    assert decrypted["id"]      == entry_id
