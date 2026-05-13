@@ -8,6 +8,7 @@ from pathlib import Path
 from queue import Queue, Empty
 from contextlib import contextmanager
 from typing import Callable, List
+from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
 
 
 class DatabasePool: # класс для управления пулом соединений с базой данных SQLite и миграциями схемы. он обеспечивает безопасный и эффективный доступ к базе данных для хранения зашифрованных данных, аудита и настроек приложения.
@@ -85,8 +86,8 @@ class DatabasePool: # класс для управления пулом соед
 
     # миграция весии 1: создание таблиц для хранения зашифрованных данных, аудита и настроек приложения, а также таблицы для хранения ключей и удаленных записей. она также добавляет индексы для ускорения поиска по датам и тегам.
     def _migration_1(self, conn: sqlite3.Connection):
-        cur.execute("DROP TABLE IF EXISTS schema_meta") # удаляем старую таблицу, если она существует
         cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS schema_meta") # удаляем старую таблицу, если она существует
 
         # основная таблица хранения зашифрованных данных
         cur.execute("""
@@ -166,6 +167,7 @@ class DatabasePool: # класс для управления пулом соед
     def _migration_2(self, conn: sqlite3.Connection):
         cur = conn.cursor()
             
+        cur.execute("DROP TABLE IF EXISTS audit_log_old")
         cur.execute("ALTER TABLE audit_log RENAME TO audit_log_old")
         cur.execute("""
         CREATE TABLE audit_log (
@@ -178,23 +180,28 @@ class DatabasePool: # класс для управления пулом соед
         )
         """)
         
+        #таблица дял хранения публичных ключей для проверки подписей в аудите. она позволяет управлять ключами и алгоритмами, используемыми для обеспечения целостности логов аудита.
         cur.execute("""
-            CREATE INDEX idx_audit_log_sequence ON audit_log (sequence_number);
-            CREATE INDEX idx_audit_log_timestamp ON audit_log (timestamp);
-        """)
+        CREATE TABLE IF NOT EXISTS audit_signing_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            public_key TEXT NOT NULL,
+            algorithm TEXT NOT NULL DEFAULT 'Ed25519',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_active INTEGER DEFAULT 1
+        )
+                    """)
+        
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_sequence ON audit_log (sequence_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)")
         
         cur.execute("DROP TABLE audit_log_old")
-        
-        from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
 
     # добавляем недостающие колонки если их нет
         ensure_key_store_schema(conn)
         ensure_audit_log_schema(conn)
 
         conn.commit()
-        
-        conn.commit()
-        
+
     
     @staticmethod
     def add_column_if_missing(conn, table: str, column: str, definition: str):
