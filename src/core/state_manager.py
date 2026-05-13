@@ -9,14 +9,14 @@ class StateManager:
         self.session_locked = False 
         self.inactivity_timer = None
         self.inactivity_timeout = config.get_preference('inactivity_timeout') or 300
+    
+    def lock(self):
+        self._locked = True
+        self._event_bus.publish("VaultLocked", reason="manual")
 
-    def lock(self): #метод для блокировки сессии. он устанавливает состояние как заблокированное и блокирует доступ к ключам через key_manager. этот метод должен быть вызван при выходе пользователя, при блокировке приложения или при истечении времени неактивности.
-        self.session_locked = True
-        if self.key_manager:
-            self.key_manager.lock()   # блокируем доступ к ключам
-
-    def unlock(self): #метод для разблокировки сессии. он устанавливает состояние как разблокированное и может быть вызван после успешного входа пользователя. он также может запускать таймер неактивности для автоматической блокировки после определенного времени.
-        self.session_locked = False
+    def unlock(self):
+        self._locked = False
+        self._event_bus.publish("VaultUnlocked")
 
     def is_locked(self): #метод для проверки, заблокирована ли сессия. он возвращает True, если сессия заблокирована, и False в противном случае. он может использоваться в других частях приложения для проверки состояния блокировки перед выполнением действий, требующих доступа к ключам или другим защищенным ресурсам.
         return self.session_locked
