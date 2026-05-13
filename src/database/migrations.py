@@ -29,10 +29,10 @@ def ensure_key_store_schema(conn):
     # id, key_type, key_data, version, created_at
     # если в будущем добавятся новые — добавляем их здесь через _add_column_if_missing
 
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "key_store", "version", "INTEGER DEFAULT 1"
     )
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "key_store", "params", "TEXT"
     )
 
@@ -44,15 +44,15 @@ def ensure_audit_log_schema(conn):
 
     from database.db import DatabasePool
 
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "audit_log", "sequence_number", "INTEGER"
     )
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "audit_log", "previous_hash", "TEXT"
     )
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "audit_log", "entry_data", "BLOB"
     )
-    DatabasePool._add_column_if_missing(
+    DatabasePool.add_column_if_missing(
         conn, "audit_log", "entry_hash", "TEXT"
     )
