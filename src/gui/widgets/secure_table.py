@@ -15,7 +15,6 @@ class SecureTable(QTableWidget):
 
         self.entries = []
         self.show_passwords = False
-        self._fuzzy_match = self._fuzzy_match  # сохраняем ссылку на метод для использования в статическом контексте
 
         self.setColumnCount(5)
         self.setHorizontalHeaderLabels(["Название", "Логин", "URL", "Последнее изменение", "Пароль"])
@@ -155,7 +154,7 @@ class SecureTable(QTableWidget):
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _get_entry(self, entry_id: str) -> dict:
-        for e in self.entulries:
+        for e in self.entries:
             if e["id"] == entry_id:
                 return e
         return None
