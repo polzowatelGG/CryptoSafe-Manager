@@ -3,20 +3,23 @@
 import threading
 
 class StateManager:
-    def __init__(self, config, key_manager=None):
+    def __init__(self, config, key_manager=None, event_bus = None):
         self.config = config
+        self._event_bus = event_bus
         self.key_manager = key_manager
         self.session_locked = False 
         self.inactivity_timer = None
         self.inactivity_timeout = config.get_preference('inactivity_timeout') or 300
     
     def lock(self):
-        self._locked = True
-        self._event_bus.publish("VaultLocked", reason="manual")
+        self.session_locked_locked = True
+        if self._event_bus:
+            self._event_bus.publish("VaultLocked", reason="manual")
 
     def unlock(self):
-        self._locked = False
-        self._event_bus.publish("VaultUnlocked")
+        self.session_locked_locked = False
+        if self._event_bus:
+            self._event_bus.publish("VaultUnlocked")
 
     def is_locked(self): #метод для проверки, заблокирована ли сессия. он возвращает True, если сессия заблокирована, и False в противном случае. он может использоваться в других частях приложения для проверки состояния блокировки перед выполнением действий, требующих доступа к ключам или другим защищенным ресурсам.
         return self.session_locked
