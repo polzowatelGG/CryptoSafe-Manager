@@ -193,6 +193,10 @@ class DatabasePool: # класс для управления пулом соед
         
         cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_sequence ON audit_log (sequence_number)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
+            ON audit_log ((json_extract(entry_data, '$.event_type')))
+        """)
         
         cur.execute("DROP TABLE audit_log_old")
 
