@@ -30,6 +30,9 @@ class SecureBuffer:
         # блокируем страницу памяти от выгрузки в своп
         self._locked = self._lock_memory()
 
+    def set_monitor(self,monitor):
+        self._monitor = monitor
+
     def _lock_memory(self) -> bool:
         # пытаемся заблокировать память платформенным вызовом
         try:
