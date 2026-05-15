@@ -5,18 +5,16 @@ from PyQt6.QtWidgets import (
     QSystemTrayIcon, QMenu, QInputDialog, 
 )
 from PyQt6.QtGui import QAction, QFont, QIcon
-from PyQt6.QtCore import QEvent, QUrl, QTimer, Qt, QTimer, QThread, pyqtSignal as Signal
+from PyQt6.QtCore import QEvent, QUrl, Qt, QTimer, QThread, pyqtSignal as Signal
 from datetime import datetime
 import uuid
 import re
-from core.audit import log_verifier
 from core.crypto.key_derivation import PasswordValidator
 from core.vault.password_generator import PasswordGenerator
 from gui.widgets.audit_log_viewer import AuditLogViewer
 from gui.widgets.secure_table import SecureTable
 from gui.settings_dialog import SettingsDialog
 from core import events
-from gui.settings_dialog import SettingsDialog
 import json
 
 
@@ -41,14 +39,15 @@ class PasswordStrengthIndicator(QLabel):
 
 class MainWindow(QMainWindow):
     def __init__(self, entry_manager=None, key_manager=None, authenticator=None,
-                 state_manager=None, clipboard_service=None, parent=None):
+                state_manager=None, clipboard_service=None,
+                log_verifier=None, parent=None):
         super().__init__(parent)
         self.entry_manager = entry_manager
         self.key_manager = key_manager
         self.authenticator = authenticator
         self.state_manager = state_manager
-        self.clipboard_service = clipboard_service  # теперь принимаем и сохраняем
-        self.log_verifier = log_verifier
+        self.clipboard_service = clipboard_service
+        self.log_verifier = log_verifier  # теперь из аргумента
         self.installEventFilter(self)
         self._create_tray_icon()  # создаём иконку трея 
 
@@ -254,6 +253,28 @@ class MainWindow(QMainWindow):
         # если копирование заблокировано — показываем пункт разблокировки
         if self.clipboard_service and self.clipboard_service.is_blocked():
             self.unblock_clipboard_action.setVisible(True)
+            
+    #
+    #
+    #
+    def _on_clipboard_unblocked(self, data=None):
+        #обработчик события разблокировки буфера обмена
+        # окрываем пункт меню разблокировки
+        self.unblock_clipboard_action.setVisible(False)
+        
+        # рбновляем статус в статус-баре (показываем уведомление)
+        self.show_toast("Буфер обмена разблокирован", duration=2000)
+        
+        # обновляем подсветку в таблице (снимаем подсветку)
+        if hasattr(self, 'table') and self.table:
+            self.table.highlight_clipboard_entry(None)
+            
+    def show_toast(self, message: str, duration: int = 3000):
+        #показать временное сообщение в статус-баре
+        if hasattr(self, 'status_bar'):
+            original = self.status_bar.currentMessage()
+            self.status_bar.showMessage(message)
+            QTimer.singleShot(duration, lambda: self.status_bar.showMessage(original))
 
     # ------------------------
     # Центральная таблица с поиском
@@ -286,7 +307,7 @@ class MainWindow(QMainWindow):
         if not self.entry_manager:
             return
 
-        self.table.secure_clear_entries()
+        self.table.clear_entries()
 
         entries = self.entry_manager.get_all_entries()
         try:
@@ -306,7 +327,7 @@ class MainWindow(QMainWindow):
 
     def _on_vault_locked(self, **kwargs):
     # при блокировке хранилища очищаем все расшифрованные данные из таблицы
-        self.table.secure_clear_entries()   
+        self.table.clear_entries()   
 
     def _on_search(self, text):
         self.table.filter_entries(text)
@@ -628,11 +649,14 @@ class MainWindow(QMainWindow):
     # ------------------------
     def _show_audit_log(self):
         dialog = QDialog(self)
-        dialog.setWindowTitle("Логи")
+        dialog.setWindowTitle("Журнал аудита")
         layout = QVBoxLayout()
-        layout.addWidget(AuditLogViewer())
+        # получаем pool из entry_manager для передачи в AuditLogViewer
+        # без pool виджет откроется пустым без реальных данных
+        pool = getattr(self.entry_manager, 'db', None) if self.entry_manager else None
+        layout.addWidget(AuditLogViewer(db=pool))
         dialog.setLayout(layout)
-        dialog.resize(600, 400)
+        dialog.resize(900, 600)  # увеличиваем — виджет теперь полноценный
         dialog.exec()
 
     def _show_settings(self):
@@ -680,15 +704,6 @@ class MainWindow(QMainWindow):
         if self.log_verifier:
             self.log_verifier.stop_periodic_verification()
         super().closeEvent(event)
-        
-    def _on_verify_integrity(self):
-    # ручная полная верификация аудит-лога
-        if not self.log_verifier:
-            QMessageBox.information(
-                self, "Недоступно",
-                "Верификатор логов не инициализирован"
-            )
-            return
 
         # показываем индикатор прогресса пока идёт проверка
         from PyQt6.QtWidgets import QProgressDialog
