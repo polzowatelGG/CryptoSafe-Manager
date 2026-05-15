@@ -43,19 +43,11 @@ class ConfigManager: # класс ConfigManager, который отвечает
             self.save()
 
     def save(self):
-    # сохраняем текущие настройки в JSON-файл на диск
-    # вызывается после каждого set_preference чтобы
-    # настройки пережили перезапуск приложения
+        # сохраняем текущую конфигурацию в JSON-файл
         try:
-            with open(self._config_path, 'w', encoding='utf-8') as f:
-                json.dump({
-                'database_path': self._database_path,
-                'encryption': self._encryption_settings,
-                'preferences': self._prefs,
-                }, f, indent=2, ensure_ascii=False)
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
         except Exception as e:
-        # не падаем — но проблему логируем
-
             logging.getLogger(__name__).warning(f"Ошибка сохранения: {e}")
 
     def get_database_path(self) -> str:
@@ -78,9 +70,10 @@ class ConfigManager: # класс ConfigManager, который отвечает
         self.save()
 
     def set_preference(self, key: str, value):
-        # обновляем значение в памяти
-        self._prefs[key] = value
-        # сразу сохраняем на диск чтобы пережить перезапуск (CLIP-3)
+        # обновляем предпочтение в памяти и сразу сохраняем на диск
+        if "preferences" not in self.config:
+            self.config["preferences"] = {}
+        self.config["preferences"][key] = value
         self.save()
 
     def generate_key(self, password: str) -> bytes:  # генерация ключа на основе пароля и соли с сохранением соли
