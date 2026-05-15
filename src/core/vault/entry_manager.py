@@ -127,8 +127,46 @@ class EntryManager:
             except Exception:
                 # не упадет из-за одной битой записи 
                 continue
+            
+        try: 
+            self.events.publish(
+                "VaultSearched",
+                query = ["ALL"],
+                result_count = len(result)
+            )
+        except Exception:
+            pass
 
         return result
+    
+    def search_entries(self, query: str) -> list:
+    # поиск по записям с анонимным логированием запроса 
+    # логируем факт поиска и длину запроса но НЕ сам запрос
+        all_entries = self.get_all_entries()
+
+        query_lower = query.lower().strip()
+        results = [
+            e for e in all_entries
+            if query_lower in e.get("title",    "").lower()
+            or query_lower in e.get("username", "").lower()
+            or query_lower in e.get("url",      "").lower()
+            or query_lower in e.get("notes",    "").lower()
+            or query_lower in e.get("category", "").lower()
+        ]
+
+        # логируем анонимно: длина запроса, количество результатов
+        # но не сам текст запроса (может содержать чувствительные данные)
+        try:
+            self.events.publish(
+                "VaultSearched",
+                query="[REDACTED]",
+                query_length=len(query),
+                result_count=len(results),
+            )
+        except Exception:
+            pass
+
+        return results
 
     # обновление 
     def update_entry(self, entry_id: str, new_data: dict):
