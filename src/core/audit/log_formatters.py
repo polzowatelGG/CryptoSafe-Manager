@@ -310,7 +310,7 @@ class LogFormatter: # класс для форматирования и эксп
             return True  # если менеджер ключей не инициализирован, пропускаем проверку (можно изменить логику по необходимости)
         
         try : # используем существующий метод верификации пароля из менеджера ключей для подтверждения пароля. если пароль неверный, возвращаем False, иначе True.
-            return self.key_manager.derivation.verify_master_key(password, self.key_manager.storage.get_auth_hash())
+            return self.key_manager.derivation.verify_password(password, self.key_manager.storage.get_auth_hash())
         except Exception:
             return False
         
