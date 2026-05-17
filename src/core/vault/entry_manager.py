@@ -1,12 +1,13 @@
 import json
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 import os
 import core.events as events
 
 _NONCE_SIZE = 12
 _TAG_SIZE   = 16
+_SOFT_DELETE_TTL_DAYS = 30
 
 class EntryManager:
     def __init__(self, db_connection, key_manager, event_system=None):
@@ -197,20 +198,8 @@ class EntryManager:
 
     # удаление 
     def delete_entry(self, entry_id: str, soft_delete: bool = True):
-        if soft_delete:
-            self.db.execute(
-                """
-                INSERT INTO deleted_entries (id, deleted_at, expires_at)
-                VALUES (?, ?, ?)
-                """,
-                (
-                    entry_id,
-                    datetime.utcnow(),
-                    datetime.utcnow(),
-                ),
-                commit=True,
-            )
-
+        now = datetime.utcnow()
+        expires = now + timedelta(days=_SOFT_DELETE_TTL_DAYS) 
         with self.db.transaction() as conn:
             cur = conn.cursor()
             if soft_delete:
@@ -219,20 +208,13 @@ class EntryManager:
                     INSERT OR REPLACE INTO deleted_entries (id, deleted_at, expires_at)
                     VALUES (?, ?, ?)
                     """,
-                    (
-                        entry_id,
-                        datetime.utcnow(),
-                        datetime.utcnow(),
-                    ),
+                    (entry_id, now, expires),
                 )
-
             cur.execute(
                 "DELETE FROM vault_entries WHERE id = ?",
                 (entry_id,),
             )
-
         self.events.publish("EntryDeleted", entry_id=entry_id)
-
 
     def reencrypt_all(self, old_key: bytes, new_key: bytes, conn=None):
         if conn is None:
