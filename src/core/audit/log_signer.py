@@ -89,5 +89,10 @@ class LogSigner:
 
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
         public_key_bytes = bytes.fromhex(row["public_key"])
+        publik_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
         # возвращаем только публичный ключ — для верификации приватный не нужен
-        return public_key_bytes
+        instance = object.__new__(cls)
+        instance.key_manager = None
+        instance._private_key = None
+        instance._public_key = publik_key
+        return instance
