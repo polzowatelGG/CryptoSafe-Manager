@@ -475,6 +475,7 @@ class MainWindow(QMainWindow):
             username = self.sanitize_text(username_edit.text(), max_len=255)
             url = self.sanitize_text(url_edit.text(), max_len=500)
             password = password_edit.text()
+            notes = self.sanitize_text(notes_edit.toPlainText(), max_len=2000)
 
             if not title:
                 QMessageBox.warning(self, "Ошибка", "Название не может быть пустым")
@@ -505,8 +506,10 @@ class MainWindow(QMainWindow):
                         return
             else:   
                 entry_id = str(uuid.uuid4())
+                
             self.table.add_entry(entry_id, title, username, url,
-                                datetime.now().strftime("%Y-%m-%d %H:%M"), password)
+                                datetime.now().strftime("%Y-%m-%d %H:%M"), 
+                                password, notes)
             QMessageBox.information(self, "Успех", "Запись добавлена")
 
     # ------------------------

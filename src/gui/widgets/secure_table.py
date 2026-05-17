@@ -83,17 +83,26 @@ class SecureTable(QTableWidget):
         except Exception:
             return url
 
-    def add_entry(self, entry_id: str, title: str, username: str, url: str, updated_at: str, password: str):
+    def add_entry(
+        self,
+        entry_id: str,
+        title: str,
+        username: str,
+        url: str,
+        updated_at: str,
+        password: str,
+        notes: str = "",          
+    ):
         row = self.rowCount()
         self.insertRow(row)
-
         self.entries.append({
-            "id": entry_id,
-            "title": title,
-            "username": username,
-            "url": url,
+            "id":         entry_id,
+            "title":      title,
+            "username":   username,
+            "url":        url,
             "updated_at": updated_at,
-            "password": password,
+            "password":   password,
+            "notes":      notes,      
         })
 
         self.setItem(row, 0, QTableWidgetItem(title))
