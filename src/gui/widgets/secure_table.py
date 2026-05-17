@@ -109,6 +109,8 @@ class SecureTable(QTableWidget):
     def update_password_visibility(self, show: bool):
         self.show_passwords = show
         for row in range(self.rowCount()):
+            if row >= len(self.entries):
+                break
             password = self.entries[row]["password"]
             pw_text = password if show else "••••••••"
             self.setItem(row, 4, QTableWidgetItem(pw_text))
@@ -140,6 +142,10 @@ class SecureTable(QTableWidget):
         copy_user_action = QAction("📋 Копировать логин", self)
         copy_user_action.triggered.connect(lambda: self._copy_username(entry_id))
         menu.addAction(copy_user_action)
+        
+        copy_url_action = QAction("📋 Копировать URL", self)
+        copy_url_action.triggered.connect(lambda: self._copy_url(entry_id))
+        menu.addAction(copy_url_action)
 
         copy_all_action = QAction("📋 Копировать всё (пароль)", self)
         copy_all_action.triggered.connect(lambda: self._copy_password(entry_id))
