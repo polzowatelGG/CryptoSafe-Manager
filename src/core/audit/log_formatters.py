@@ -24,30 +24,30 @@ class LogFormatter: # класс для форматирования и эксп
         end_seq: Optional[int] = None,
         password: Optional[str] = None,
     ) -> int: # экспорт в JSON — для обмена данными и интеграции с внешними системами. возвращает количество экспортированных записей.
-            if not self._confirm_password(password or ""):
-                raise PermissionError(
-                    "Неверный мастер-пароль. Экспорт отклонён."
-                )
-            rows = self._fetch_rows(start_seq, end_seq)
-            entries = [self._row_to_dict(row) for row in rows] 
+        if not self._confirm_password(password or ""):
+            raise PermissionError(
+                "Неверный мастер-пароль. Экспорт отклонён."
+            )
+        rows = self._fetch_rows(start_seq, end_seq)
+        entries = [self._row_to_dict(row) for row in rows] 
 
-            payload = {
-                "export_meta": {
-                    "exported_at":    datetime.utcnow().isoformat() + "Z",
-                    "total_entries":  len(entries),
-                    "format_version": 1,
-                    # публичный ключ для независимой верификации подписей
-                    "public_key_hex": self.signer.get_public_key_bytes().hex(),
-                },
-                "entries": entries,
-            }
+        payload = {
+            "export_meta": {
+                "exported_at":    datetime.utcnow().isoformat() + "Z",
+                "total_entries":  len(entries),
+                "format_version": 1,
+                # публичный ключ для независимой верификации подписей
+                "public_key_hex": self.signer.get_public_key_bytes().hex(),
+            },
+            "entries": entries,
+        }
 
-            with open(filepath, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+        with open(filepath, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
 
-            self._log_export("JSON", filepath, len(entries))
+        self._log_export("JSON", filepath, len(entries))
 
-            return len(entries)
+        return len(entries)
 
     def export_csv(
         self,
