@@ -205,6 +205,9 @@ class DatabasePool: # класс для управления пулом соед
         ensure_audit_log_schema(conn)
 
         conn.commit()
+        
+        cur.execute("DROP TABLE IF EXIST audit_log_old")
+        conn.commit
 
     
     @staticmethod
