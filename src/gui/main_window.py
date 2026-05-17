@@ -493,8 +493,18 @@ class MainWindow(QMainWindow):
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
                 if reply == QMessageBox.StandardButton.No:
                     return
-
-            entry_id = str(uuid.uuid4())
+                
+            if self.entry_manager:
+                try:
+                    entry_id = self.entry_manager.create_entry({
+                        "title": title, "username": username,
+                        "password": password, "url": url, "notes": notes,
+                    })
+                except Exception as e:
+                        QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить: {e}")
+                        return
+            else:   
+                entry_id = str(uuid.uuid4())
             self.table.add_entry(entry_id, title, username, url,
                                 datetime.now().strftime("%Y-%m-%d %H:%M"), password)
             QMessageBox.information(self, "Успех", "Запись добавлена")
@@ -569,14 +579,25 @@ class MainWindow(QMainWindow):
                 )
                 if reply == QMessageBox.StandardButton.No:
                     return
-
-            entry["title"] = new_title
-            entry["username"] = new_username
-            entry["password"] = new_password
-            entry["url"] = new_url
-            entry["notes"] = notes_edit.toPlainText()
-            entry["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
-
+            
+            if self.entry_manager:
+                try:
+                    self.entry_manager.update_entry(entry_id, {
+                        "title": new_title, "username": new_username,
+                        "password": new_password, "url": new_url,
+                        "notes": notes_edit.toPlainText(),
+                    })
+                except Exception as e:
+                    QMessageBox.critical(self, "Ошибка", f"Не удалось обновить: {e}")
+                    return
+ 
+            # обновляем локальный dict
+            entry.update({
+                "title": new_title, "username": new_username,
+                "password": new_password, "url": new_url,
+                "notes": notes_edit.toPlainText(),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            })
             row = self.table.entries.index(entry)
             self.table.setItem(row, 0, QTableWidgetItem(entry["title"]))
             self.table.setItem(row, 1, QTableWidgetItem(self.table._mask_login(entry["username"])))
@@ -602,13 +623,21 @@ class MainWindow(QMainWindow):
             self, "Подтверждение", "Удалить выбранную запись?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
-        if reply == QMessageBox.StandardButton.Yes:
-            for i, e in enumerate(self.table.entries):
-                if e["id"] == entry_id:
-                    self.table.removeRow(i)
-                    self.table.entries.pop(i)
-                    break
-            QMessageBox.information(self, "Удаление", "Запись удалена")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if self.entry_manager:
+            try:
+                self.entry_manager.delete_entry(entry_id)
+            except Exception as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось удалить: {e}")
+                return
+ 
+        for i, e in enumerate(self.table.entries):
+            if e["id"] == entry_id:
+                self.table.removeRow(i)
+                self.table.entries.pop(i)
+                break
+        QMessageBox.information(self, "Удаление", "Запись удалена")
 
     # ------------------------
     # Смена мастер-пароля
@@ -674,7 +703,6 @@ class MainWindow(QMainWindow):
     # вызывается из фонового потока через колбэк 
     # обновляем статус целостности в статус-баре
     # используем QTimer.singleShot чтобы обновить GUI из главного потока
-
         def _update():
             if result.get('verified'):
                 integrity_status = "✅ Лог: целостность подтверждена"
