@@ -10,9 +10,6 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional, Callable
 import secrets
-
-class SecureBuffer: 
-    import ctypes
 import sys
 
 class SecureBuffer:
