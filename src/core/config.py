@@ -10,14 +10,14 @@ from core.key_manager import KeyManager
 class ConfigManager: # класс ConfigManager, который отвечает за управление конфигурацией приложения. он загружает и сохраняет конфигурацию в формате JSON, предоставляет методы для получения и установки различных параметров, таких как путь к базе данных, настройки шифрования и пользовательские предпочтения.ё
 
     DEFAULT_CONFIG = { # базовая конфигурация
-        "database_path": "src/database/crypto.db",
+        "database_path": "data/crypto.db",
         "encryption": {
             "method": "AES256Placeholder",
             "key_salt": None
         },
         
         "preferences": { 
-            "clipboard_timeout": 67,  
+            "clipboard_timeout": 30,  
             "auto_lock": True,
             "theme": "system",
             "language": "ru",
