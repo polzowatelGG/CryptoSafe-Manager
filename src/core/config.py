@@ -1,7 +1,7 @@
 # этот файл содержит класс ConfigManager, который отвечает за управление конфигурацией приложения. он загружает и сохраняет конфигурацию в формате JSON, предоставляет методы для получения и установки различных параметров, таких как путь к базе данных, настройки шифрования и пользовательские предпочтения. 
 # он также включает метод для генерации ключа на основе пароля и соли, используя KeyManager для управления процессом генерации ключей. этот класс обеспечивает централизованное управление настройками приложения и позволяет легко сохранять и загружать конфигурацию при запуске приложения.
 # конфигурация включает базовые параметры, такие как путь к базе данных, настройки шифрования и пользовательские предпочтения, которые могут быть изменены пользователем и сохранены для последующего использования. ConfigManager обеспечивает удобный интерфейс для работы с этими настройками и гарантирует, что они сохраняются в надежном формате для использования при следующем запуске приложения.
-
+import logging
 import copy
 import json
 from pathlib import Path
@@ -10,14 +10,14 @@ from core.key_manager import KeyManager
 class ConfigManager: # класс ConfigManager, который отвечает за управление конфигурацией приложения. он загружает и сохраняет конфигурацию в формате JSON, предоставляет методы для получения и установки различных параметров, таких как путь к базе данных, настройки шифрования и пользовательские предпочтения.ё
 
     DEFAULT_CONFIG = { # базовая конфигурация
-        "database_path": "src/database/crypto.db",
+        "database_path": "data/crypto.db",
         "encryption": {
             "method": "AES256Placeholder",
             "key_salt": None
         },
         
         "preferences": { 
-            "clipboard_timeout": 67,  
+            "clipboard_timeout": 30,  
             "auto_lock": True,
             "theme": "system",
             "language": "ru",
@@ -43,14 +43,12 @@ class ConfigManager: # класс ConfigManager, который отвечает
             self.save()
 
     def save(self):
+        # сохраняем текущую конфигурацию в JSON-файл
         try:
-            if not self.config_path.parent.exists(): # если папка для конфигурации не существует создаём её
-                self.config_path.parent.mkdir(parents=True) # создаём папку для конфигурации
-
-            with open(self.config_path, "w", encoding="utf-8") as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=4) # сохраняем конфигурацию в файл в формате json с отступами для удобства чтения
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"[ConfigManager] Ошибка сохранения: {e}")
+            logging.getLogger(__name__).warning(f"Ошибка сохранения: {e}")
 
     def get_database_path(self) -> str:
         return self.config.get("database_path", self.DEFAULT_CONFIG["database_path"]) # возвращаем путь к базе данных из конфигурации или из базовой конфигурации если его нет
@@ -72,9 +70,10 @@ class ConfigManager: # класс ConfigManager, который отвечает
         self.save()
 
     def set_preference(self, key: str, value):
+        # обновляем предпочтение в памяти и сразу сохраняем на диск
         if "preferences" not in self.config:
-            self.config["preferences"] = {} # создаём раздел предпочтений если его нет
-        self.config["preferences"][key] = value # обновляем предпочтение в конфигурации
+            self.config["preferences"] = {}
+        self.config["preferences"][key] = value
         self.save()
 
     def generate_key(self, password: str) -> bytes:  # генерация ключа на основе пароля и соли с сохранением соли

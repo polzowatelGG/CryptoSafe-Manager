@@ -37,5 +37,5 @@ def test_clipboard_timer_monkeypatched(tmp_path, monkeypatch): # тестиру�
     sm.set_clipboard("secret")
     assert sm.get_clipboard() == "secret"
 
-    sm.clear_clipboard()
+    sm._clear_clipboard()
     assert sm.get_clipboard() is None

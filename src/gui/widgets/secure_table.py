@@ -1,6 +1,9 @@
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QMenu, QHeaderView, QMessageBox
+from difflib import SequenceMatcher
+from PyQt6.QtGui import QColor, QBrush
+from typing import Optional
 
 class SecureTable(QTableWidget):
     entry_edit_requested = pyqtSignal(str)
@@ -26,6 +29,44 @@ class SecureTable(QTableWidget):
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
+        
+    @staticmethod
+    def _fuzzy_match(query: str, text: str, threshold: float = 0.6) -> bool:
+        # точное вхождение подстроки — проверяем первым, это быстрее
+        if query in text:
+            return True
+
+        # нечёткое соответствие через SequenceMatcher —
+        # сравниваем запрос с каждым словом из текста отдельно,
+        # чтобы опечатка в одном слове не размывалась по всей строке.
+        # порог 0.6: "Gogle" → "Google" даёт ~0.67, проходит.
+        # "goo" → "Google" даёт 0.5, не проходит — слишком короткий фрагмент.
+        for word in text.split():
+            ratio = SequenceMatcher(None, query, word).ratio()
+            if ratio >= threshold:
+                return True
+
+        return False
+    
+    def highlight_clipboard_entry(self, entry_id: Optional[str]):
+        # подсвечиваем строку запись которой сейчас в буфере обмена (UI-2)
+        # снимаем подсветку со всех строк и подсвечиваем нужную
+        for row in range(self.rowCount()):
+            is_highlighted = (
+                entry_id is not None and
+                row < len(self.entries) and
+                self.entries[row].get("id") == entry_id
+            )
+
+            # голубой фон для строки в буфере, стандартный для остальных
+            color = QColor(173, 216, 230) if is_highlighted else QColor(255, 255, 255, 0)
+            brush = QBrush(color)
+
+            for col in range(self.columnCount()):
+                item = self.item(row, col)
+                if item:
+                    item.setBackground(brush)
+
 
     def _mask_login(self, login: str) -> str:
         if len(login) <= 4:
@@ -42,17 +83,26 @@ class SecureTable(QTableWidget):
         except Exception:
             return url
 
-    def add_entry(self, entry_id: str, title: str, username: str, url: str, updated_at: str, password: str):
+    def add_entry(
+        self,
+        entry_id: str,
+        title: str,
+        username: str,
+        url: str,
+        updated_at: str,
+        password: str,
+        notes: str = "",          
+    ):
         row = self.rowCount()
         self.insertRow(row)
-
         self.entries.append({
-            "id": entry_id,
-            "title": title,
-            "username": username,
-            "url": url,
+            "id":         entry_id,
+            "title":      title,
+            "username":   username,
+            "url":        url,
             "updated_at": updated_at,
-            "password": password,
+            "password":   password,
+            "notes":      notes,      
         })
 
         self.setItem(row, 0, QTableWidgetItem(title))
@@ -68,6 +118,8 @@ class SecureTable(QTableWidget):
     def update_password_visibility(self, show: bool):
         self.show_passwords = show
         for row in range(self.rowCount()):
+            if row >= len(self.entries):
+                break
             password = self.entries[row]["password"]
             pw_text = password if show else "••••••••"
             self.setItem(row, 4, QTableWidgetItem(pw_text))
@@ -99,6 +151,10 @@ class SecureTable(QTableWidget):
         copy_user_action = QAction("📋 Копировать логин", self)
         copy_user_action.triggered.connect(lambda: self._copy_username(entry_id))
         menu.addAction(copy_user_action)
+        
+        copy_url_action = QAction("📋 Копировать URL", self)
+        copy_url_action.triggered.connect(lambda: self._copy_url(entry_id))
+        menu.addAction(copy_url_action)
 
         copy_all_action = QAction("📋 Копировать всё (пароль)", self)
         copy_all_action.triggered.connect(lambda: self._copy_password(entry_id))
@@ -122,6 +178,14 @@ class SecureTable(QTableWidget):
         entry = self._get_entry(entry_id)
         if not entry:
             return
+        
+        if entry.get("never_copy_to_clipboard", False):
+            QMessageBox.warning(
+            self, "Запрещено",
+            "Для этой записи запрещено копирование пароля в буфер обмена."
+            )
+            return
+        
         password = entry.get("password", "")
         if not password:
             QMessageBox.information(self, "Информация", "Пароль не задан")
@@ -160,6 +224,27 @@ class SecureTable(QTableWidget):
             from PyQt6.QtWidgets import QApplication
             QApplication.clipboard().setText(username)
 
+    def _copy_url(self, entry_id: str):
+        entry = self._get_entry(entry_id)
+        if not entry:
+            return
+        url = entry.get("url", "")
+        if not url:
+            QMessageBox.information(self, "Информация", "URL не задан")
+            return
+        if self.clipboard_service:
+            try:
+                self.clipboard_service.copy_to_clipboard(
+                    data=url,
+                    data_type="url",
+                    source_entry_id=entry_id
+                )
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Ошибка", str(e))
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(url)
+
     def _show_single_password(self, entry_id: str):
         entry = self._get_entry(entry_id)
         if not entry:
@@ -197,31 +282,36 @@ class SecureTable(QTableWidget):
                 self.setRowHidden(row, False)
             return
 
-        filters = {}
-        words = search_text.split()
-        for word in words:
+        # разбираем запрос на field-фильтры (title:gogle) и свободный текст
+        field_filters = {}
+        any_words = []
+
+        for word in search_text.split():
             if ':' in word:
                 field, value = word.split(':', 1)
-                if field in ('title', 'username', 'url', 'notes'):
-                    filters[field] = value.lower()
+                if field in ('title', 'username', 'url', 'notes', 'category'):
+                    field_filters[field] = value.lower()
             else:
-                filters.setdefault('any', []).append(word.lower())
+                any_words.append(word.lower())
 
         for row, entry in enumerate(self.entries):
             visible = True
-            for field, val in filters.items():
-                if field == 'any':
-                    continue
+
+            # проверяем field-фильтры (title:gogle)
+            for field, val in field_filters.items():
                 field_value = entry.get(field, '').lower()
-                if val not in field_value:
+                if not self._fuzzy_match(val, field_value):
                     visible = False
                     break
-            if visible and 'any' in filters:
-                haystack = (entry.get('title', '') + ' ' +
-                            entry.get('username', '') + ' ' +
-                            entry.get('url', '') + ' ' +
-                            entry.get('notes', '')).lower()
-                if not any(any_word in haystack for any_word in filters['any']):
-                    visible = False
 
-            self.setRowHidden(row, not visible)
+            # проверяем свободный текст по всем полям
+            if visible and any_words:
+                haystack = (
+                    entry.get('title',    '') + ' ' +
+                    entry.get('username', '') + ' ' +
+                    entry.get('url',      '') + ' ' +
+                    entry.get('notes',    '') + ' ' +
+                    entry.get('category', '')
+                ).lower()
+                if not any(self._fuzzy_match(w, haystack) for w in any_words):
+                    visible = False

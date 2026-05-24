@@ -6,6 +6,7 @@ from core.crypto.key_derivation import KeyDerivation
 from core.crypto.key_cache import KeyCache
 from core.crypto.key_storage import KeyStorage
 from core.events import publish, USER_LOGGED_IN, USER_LOGGED_OUT
+from core.crypto.key_derivation import PasswordValidator
 
 
 class KeyManager: # класс для управления ключами шифрования, включая инициализацию, разблокировку, доступ к ключу, блокировку и смену пароля. он использует KeyStorage для сохранения и загрузки параметров аутентификации и PBKDF2, 
@@ -74,8 +75,6 @@ class KeyManager: # класс для управления ключами шиф
     def change_password(self, old_password: str, new_password: str, entry_manager): #метод для смены пароля. он принимает старый и новый пароли, а также менеджер записей для переупаковки всех записей с новым ключом. он проверяет старый пароль, генерирует новый ключ и хэш, и обновляет все записи в базе данных с новым ключом. если транзакция завершается успешно, он обновляет кэш и keychain новым ключом. если транзакция не удается, он откатывает изменения и сохраняет старый ключ в кэше.
         if not self.unlock(old_password):
             raise ValueError("Current password is invalid")
-
-        from core.crypto.key_derivation import PasswordValidator
 
         if not PasswordValidator.validate_password_strength(new_password):
             raise ValueError("New password does not meet strength requirements")

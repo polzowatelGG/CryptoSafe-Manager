@@ -1,6 +1,6 @@
 # Рализация класса LogSigner для создания и проверки цифровых подписей с использованием Ed25519
 # и HKDF для получения ключа из мастер-ключа, предоставляемого менеджером ключей.
-
+from typing import Optional
 import cryptography.hazmat.primitives.asymmetric.ed25519 as ed25519
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.hazmat.primitives import hashes, serialization
@@ -54,3 +54,45 @@ class LogSigner:
             encoding=serialization.Encoding.Raw,
             format=serialization.PublicFormat.Raw
         )
+    def save_public_key_to_db(self, db) -> None:
+        # сохраняем публичный ключ в таблицу audit_signing_keys
+        # вызывается один раз при инициализации AuditLogger
+        public_key_hex = self.get_public_key_bytes().hex()
+
+        # проверяем — не сохранён ли уже этот ключ
+        row = db.execute(
+            "SELECT id FROM audit_signing_keys WHERE public_key = ?",
+            (public_key_hex,)
+        ).fetchone()
+
+        if not row:
+            db.execute(
+                """
+                INSERT INTO audit_signing_keys (public_key, algorithm, is_active)
+                VALUES (?, 'Ed25519', 1)
+                """,
+                (public_key_hex,),
+                commit=True
+            )
+
+    @classmethod
+    def load_from_db(cls, db) -> Optional["LogSigner"]:
+        # загружаем активный публичный ключ из БД для верификации
+        # используется LogVerifier при проверке подписей
+        row = db.execute(
+            "SELECT public_key FROM audit_signing_keys WHERE is_active = 1 "
+            "ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+
+        if not row:
+            return None
+
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+        public_key_bytes = bytes.fromhex(row["public_key"])
+        publik_key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+        # возвращаем только публичный ключ — для верификации приватный не нужен
+        instance = object.__new__(cls)
+        instance.key_manager = None
+        instance._private_key = None
+        instance._public_key = publik_key
+        return instance

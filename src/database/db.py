@@ -8,6 +8,7 @@ from pathlib import Path
 from queue import Queue, Empty
 from contextlib import contextmanager
 from typing import Callable, List
+from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
 
 
 class DatabasePool: # класс для управления пулом соединений с базой данных SQLite и миграциями схемы. он обеспечивает безопасный и эффективный доступ к базе данных для хранения зашифрованных данных, аудита и настроек приложения.
@@ -85,8 +86,8 @@ class DatabasePool: # класс для управления пулом соед
 
     # миграция весии 1: создание таблиц для хранения зашифрованных данных, аудита и настроек приложения, а также таблицы для хранения ключей и удаленных записей. она также добавляет индексы для ускорения поиска по датам и тегам.
     def _migration_1(self, conn: sqlite3.Connection):
-        cur.execute("DROP TABLE IF EXISTS schema_meta") # удаляем старую таблицу, если она существует
         cur = conn.cursor()
+        cur.execute("DROP TABLE IF EXISTS schema_meta") # удаляем старую таблицу, если она существует
 
         # основная таблица хранения зашифрованных данных
         cur.execute("""
@@ -166,6 +167,7 @@ class DatabasePool: # класс для управления пулом соед
     def _migration_2(self, conn: sqlite3.Connection):
         cur = conn.cursor()
             
+        cur.execute("DROP TABLE IF EXISTS audit_log_old")
         cur.execute("ALTER TABLE audit_log RENAME TO audit_log_old")
         cur.execute("""
         CREATE TABLE audit_log (
@@ -178,14 +180,25 @@ class DatabasePool: # класс для управления пулом соед
         )
         """)
         
+        #таблица дял хранения публичных ключей для проверки подписей в аудите. она позволяет управлять ключами и алгоритмами, используемыми для обеспечения целостности логов аудита.
         cur.execute("""
-            CREATE INDEX idx_audit_log_sequence ON audit_log (sequence_number);
-            CREATE INDEX idx_audit_log_timestamp ON audit_log (timestamp);
+        CREATE TABLE IF NOT EXISTS audit_signing_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            public_key TEXT NOT NULL,
+            algorithm TEXT NOT NULL DEFAULT 'Ed25519',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            is_active INTEGER DEFAULT 1
+        )
+                    """)
+        
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_sequence ON audit_log (sequence_number)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_log_timestamp ON audit_log (timestamp)")
+        cur.execute("""
+            CREATE INDEX IF NOT EXISTS idx_audit_log_event_type
+            ON audit_log ((json_extract(entry_data, '$.event_type')))
         """)
         
         cur.execute("DROP TABLE audit_log_old")
-        
-        from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
 
     # добавляем недостающие колонки если их нет
         ensure_key_store_schema(conn)
@@ -193,8 +206,103 @@ class DatabasePool: # класс для управления пулом соед
 
         conn.commit()
         
-        conn.commit()
+        cur.execute("DROP TABLE IF EXISTS audit_log_old")
+        conn.commit
         
+    # миграция версия 3: import/export и sharing 
+    def _migration_3(self, conn: sqlite3.Connection):
+        cur = conn.cursor()
+ 
+        # таблица для хранения метаданных общих записей
+        # shared_id       — уникальный идентификатор шаринга
+        # original_entry_id — ссылка на vault_entries.id (логическая)
+        # encryption_method — "password" | "public_key"
+        # recipient_info  — идентификатор/контакт получателя
+        # permissions     — JSON: {"read": true, "edit": false}
+        # shared_at       — время создания шаринга
+        # expires_at      — время истечения (NULL = бессрочно)
+        # package_hash    — SHA-256 зашифрованного пакета для верификации
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS shared_entries (
+            share_id          TEXT PRIMARY KEY, 
+            original_entry_id TEXT NOT NULL,
+            encryption_method TEXT NOT NULL,
+            recipient_info    TEXT,
+            permissions       TEXT NOT NULL DEFAULT '{"read": true, "edit": false}',
+            shared_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at        TIMESTAMP,
+            package_hash      TEXT
+        )
+        """)
+ 
+        # таблица истории импорта/экспорта
+        # operation_type  — "import" | "export"
+        # format          — "encrypted_json" | "csv" | "bitwarden" | "lastpass"
+        # encryption_used — boolean (0/1)
+        # entry_count     — количество записей в операции
+        # file_size       — размер файла в байтах
+        # file_path       — путь к файлу (только имя, не полный путь)
+        # checksum        — SHA-256 файла для верификации
+        # verified        — результат верификации (0/1)
+        # created_at      — время операции
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS import_export_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_type TEXT NOT NULL,
+            format         TEXT NOT NULL,
+            encryption_used INTEGER NOT NULL DEFAULT 1,
+            entry_count    INTEGER NOT NULL DEFAULT 0,
+            file_size      INTEGER NOT NULL DEFAULT 0,
+            file_path      TEXT,
+            checksum       TEXT,
+            verified       INTEGER NOT NULL DEFAULT 0,
+            created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+ 
+        # таблица контактов для хранения публичных ключей
+        # contact_id      — уникальный идентификатор
+        # name            — отображаемое имя контакта
+        # identifier      — email / username / другой идентификатор
+        # public_key_pem  — публичный ключ RSA/ECC в PEM формате
+        # key_fingerprint — отпечаток ключа для верификации
+        # last_used       — время последнего использования
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS contacts (
+            contact_id      TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            identifier      TEXT,
+            public_key_pem  TEXT,
+            key_fingerprint TEXT,
+            created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_used       TIMESTAMP
+        )
+        """)
+ 
+        # индексы для производительности
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_shared_entries_original
+        ON shared_entries (original_entry_id)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_shared_entries_expires
+        ON shared_entries (expires_at)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_import_export_history_type
+        ON import_export_history (operation_type)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_import_export_history_created
+        ON import_export_history (created_at)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_contacts_identifier
+        ON contacts (identifier)
+        """)
+ 
+        conn.commit()
+
     
     @staticmethod
     def add_column_if_missing(conn, table: str, column: str, definition: str):
@@ -206,10 +314,10 @@ class DatabasePool: # класс для управления пулом соед
         # добавляем колонку только если её ещё нет
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            
         
     @contextmanager
-    def transaction(self): # контекстный менеджер для управления транзакциями с базой данных. он обеспечивает автоматическое начало транзакции при входе в блок и коммит или откат транзакции при выходе из блока в зависимости от наличия исключений. этот метод позволяет
+    def transaction(self): # контекстный менеджер для управления транзакциями с базой данных. он обеспечивает автоматическое 
+        #начало транзакции при входе в блок и коммит или откат транзакции при выходе из блока в зависимости от наличия исключений. этот метод позволяет
         #гарантировать целостность данных при выполнении нескольких связанных операций с базой данных, обеспечивая атомарность и согласованность.
         with self.connection() as conn:
             try:
