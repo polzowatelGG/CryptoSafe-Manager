@@ -16,11 +16,18 @@ class SettingsDialog(QDialog):
         self.profile_combo = QComboBox()
         self.profile_combo.addItems(["Стандарт (30с)", "Безопасный (15с)", "Публичный ПК (5с)"])
         self.profile_combo.currentIndexChanged.connect(self._apply_profile)
-        self._init_ui()
-        self._load_settings()  # загружаем текущие значения из config
-        self._setting_model = None  # модель для связи с базой данных, если нужно будет сохранять настройки там
+        # ИСПРАВЛЕНИЕ БАГ 7: инициализируем _settings_model ДО вызова _load_settings.
+        # Было: _load_settings() вызывался до присвоения атрибута → AttributeError
+        # Было: имя _setting_model не совпадало с _settings_model в _load_settings
+        self._settings_model = None
         if self.pool:
-            self._setting_model = Settings(self.pool, AES256Placeholder)  # модель для сохранения настроек в базе данных, если pool доступен
+            try:
+                self._settings_model = Settings(self.pool, AES256Placeholder)
+            except Exception:
+                self._settings_model = None
+
+        self._init_ui()
+        self._load_settings()  # теперь _settings_model уже существует
 
     def _apply_profile(self, index):
         timeouts = [30, 15, 5]
@@ -92,6 +99,10 @@ class SettingsDialog(QDialog):
         self.backup_btn = QPushButton("Создать резервную копию")
         self.export_btn = QPushButton("Экспорт данных")
 
+        # подключаем кнопки к слотам
+        self.backup_btn.clicked.connect(self._on_backup)
+        self.export_btn.clicked.connect(self._on_export)
+
         layout.addWidget(QLabel("Резервное копирование и экспорт:"))
         layout.addWidget(self.backup_btn)
         layout.addWidget(self.export_btn)
@@ -99,6 +110,88 @@ class SettingsDialog(QDialog):
 
         tab.setLayout(layout)
         return tab
+
+    def _on_backup(self):
+        if not self.pool:
+            QMessageBox.warning(self, "Ошибка", "База данных недоступна")
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+        from pathlib import Path
+        import shutil
+
+        # пытаемся получить путь к db_path из pool
+        db_path = getattr(self.pool, 'db_path', None)
+        if not db_path:
+            QMessageBox.warning(self, "Ошибка", "Не удалось определить путь к базе данных")
+            return
+
+        default_name = f"backup_{Path(db_path).stem}.db"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить резервную копию", default_name,
+            "Database Files (*.db);;All Files (*)"
+        )
+        if not save_path:
+            return
+
+        try:
+            shutil.copy2(db_path, save_path)
+            QMessageBox.information(self, "Готово", f"Резервная копия сохранена:\n{save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать резервную копию:\n{e}")
+
+    def _on_export(self):
+        if not self.pool:
+            QMessageBox.warning(self, "Ошибка", "База данных недоступна")
+            return
+
+        from PyQt6.QtWidgets import QFileDialog
+        import json, datetime
+
+        save_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Экспорт данных", "export.json",
+            "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
+        )
+        if not save_path:
+            return
+
+        try:
+            # читаем записи из vault
+            with self.pool.connection() as conn:
+                rows = conn.execute(
+                    "SELECT id, title, username, url, notes, created_at, updated_at "
+                    "FROM vault_entries ORDER BY title"
+                ).fetchall()
+
+            entries = [dict(row) for row in rows]
+
+            if save_path.endswith('.csv'):
+                import csv
+                with open(save_path, 'w', newline='', encoding='utf-8') as f:
+                    if entries:
+                        writer = csv.DictWriter(f, fieldnames=entries[0].keys())
+                        writer.writeheader()
+                        writer.writerows(entries)
+                    else:
+                        f.write("id,title,username,url,notes,created_at,updated_at\n")
+            else:
+                export_data = {
+                    "exported_at": datetime.datetime.utcnow().isoformat(),
+                    "entries_count": len(entries),
+                    "entries": entries,
+                }
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    json.dump(export_data, f, ensure_ascii=False, indent=2, default=str)
+
+            msg = (
+                f"Экспортировано записей: {len(entries)}\n"
+                f"Файл: {save_path}\n\n"
+                "⚠️ Внимание: файл содержит данные без шифрования.\n"
+                "Храните его в безопасном месте."
+            )
+            QMessageBox.information(self, "Готово", msg)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось экспортировать данные:\n{e}")
 
     def _load_settings(self):
         # пытаемся загрузить из зашифрованной таблицы settings 
