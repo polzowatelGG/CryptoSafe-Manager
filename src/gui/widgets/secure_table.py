@@ -224,6 +224,27 @@ class SecureTable(QTableWidget):
             from PyQt6.QtWidgets import QApplication
             QApplication.clipboard().setText(username)
 
+    def _copy_url(self, entry_id: str):
+        entry = self._get_entry(entry_id)
+        if not entry:
+            return
+        url = entry.get("url", "")
+        if not url:
+            QMessageBox.information(self, "Информация", "URL не задан")
+            return
+        if self.clipboard_service:
+            try:
+                self.clipboard_service.copy_to_clipboard(
+                    data=url,
+                    data_type="url",
+                    source_entry_id=entry_id
+                )
+            except RuntimeError as e:
+                QMessageBox.warning(self, "Ошибка", str(e))
+        else:
+            from PyQt6.QtWidgets import QApplication
+            QApplication.clipboard().setText(url)
+
     def _show_single_password(self, entry_id: str):
         entry = self._get_entry(entry_id)
         if not entry:
@@ -294,5 +315,3 @@ class SecureTable(QTableWidget):
                 ).lower()
                 if not any(self._fuzzy_match(w, haystack) for w in any_words):
                     visible = False
-
-            self.setRowHidden(row, not visible)
