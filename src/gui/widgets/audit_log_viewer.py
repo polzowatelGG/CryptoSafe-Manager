@@ -232,9 +232,13 @@ class AuditLogViewer(QWidget):
     # ------------------------------------------------------------------ #
 
     def _load_entries(self):
-        # загружаем все записи из БД
+
         if not self.db:
             return
+        self._all_entries = []
+        self._filtered_entries = []
+        self.table.setRowCount(0)
+        self.details_text.clear()
         try:
             rows = self.db.execute(
                 "SELECT sequence_number, timestamp, entry_data, "
