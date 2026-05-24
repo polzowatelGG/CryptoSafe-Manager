@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
         self._create_central_table()
         self._create_status_bar()
         self._start_clipboard_timer()  # запускаем живой таймер статус-бара
+        events.subscribe("UserLoggedIn",  self._on_user_logged_in)   
         events.subscribe("UserLoggedOut", self._on_vault_locked)
         events.subscribe("VaultLocked",   self._on_vault_locked)
         events.subscribe("ClipboardUnblocked", self._on_clipboard_unblocked)
@@ -90,8 +91,11 @@ class MainWindow(QMainWindow):
         # Файл
         file_menu = menu_bar.addMenu("Файл")
         new_action = QAction("Создать", self)
+        new_action.triggered.connect(self._on_new_vault)  
         open_action = QAction("Открыть", self)
+        open_action.triggered.connect(self._on_open_vault)  
         backup_action = QAction("Резервная копия", self)
+        backup_action.triggered.connect(self._on_backup_vault)  
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.close)
         file_menu.addActions([new_action, open_action, backup_action])
@@ -179,7 +183,11 @@ class MainWindow(QMainWindow):
         source_id = status.get('source_entry_id', 'неизвестно')
         remaining = int(status.get('remaining_seconds', 0))
 
-        form.addRow("Тип данных:", QLabel(data_type if status.get('active') else "Буфер пуст"))
+        if status.get('active'):
+            _type_text = data_type
+        else:
+            _type_text = "Буфер пуст (данные скопированы вне CryptoSafe)"
+        form.addRow("Тип данных:", QLabel(_type_text))
         form.addRow("Источник:", QLabel(str(source_id) if source_id else "неизвестно"))
         form.addRow("Очистка через:", QLabel(f"{remaining} сек" if status.get('active') else "—"))
 
@@ -282,6 +290,7 @@ class MainWindow(QMainWindow):
     def _create_central_table(self):
         # Передаём clipboard_service в таблицу для кнопок копирования (UI-1)
         self.table = SecureTable(clipboard_service=self.clipboard_service)
+        self.secure_table = self.table
         
         self._load_entries()
 
@@ -325,9 +334,15 @@ class MainWindow(QMainWindow):
             # finally гарантирует очистку даже при исключении
             self.entry_manager.secure_wipe_list(entries)
 
+    def _on_user_logged_in(self, **kwargs):
+        self.login_status = "Вход выполнен"
+        self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
+
     def _on_vault_locked(self, **kwargs):
-    # при блокировке хранилища очищаем все расшифрованные данные из таблицы
-        self.table.clear_entries()   
+        # при блокировке хранилища очищаем все расшифрованные данные из таблицы
+        self.table.clear_entries()
+        self.login_status = "Не выполнен вход"   
+        self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
 
     def _on_search(self, text):
         self.table.filter_entries(text)
@@ -441,9 +456,22 @@ class MainWindow(QMainWindow):
 
         strength_indicator = PasswordStrengthIndicator()
 
-        gen_btn = QPushButton("Сгенерировать пароль")
+        gen_btn = QPushButton("🔄 Сгенерировать")
+
+        show_pass_btn = QPushButton("👁")
+        show_pass_btn.setCheckable(True)
+        show_pass_btn.setFixedWidth(32)
+        show_pass_btn.setToolTip("Показать/скрыть пароль")
+
+        def toggle_pass_visibility(checked):
+            password_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        show_pass_btn.toggled.connect(toggle_pass_visibility)
+
         password_layout = QHBoxLayout()
         password_layout.addWidget(password_edit)
+        password_layout.addWidget(show_pass_btn)
         password_layout.addWidget(gen_btn)
 
         form_layout.addRow("Название:", title_edit)
@@ -489,10 +517,14 @@ class MainWindow(QMainWindow):
                 return
 
             if not PasswordValidator.validate_password_strength(password):
-                reply = QMessageBox.question(self, "Слабый пароль",
-                    "Пароль не соответствует требованиям безопасности.\nВсё равно использовать?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.No:
+                _msg_weak_add = QMessageBox(self)
+                _msg_weak_add.setWindowTitle("Слабый пароль")
+                _msg_weak_add.setText("Пароль не соответствует требованиям безопасности.\nВсё равно использовать?")
+                _msg_weak_add.setIcon(QMessageBox.Icon.Warning)
+                _yes_weak_add = _msg_weak_add.addButton("Да", QMessageBox.ButtonRole.YesRole)
+                _msg_weak_add.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+                _msg_weak_add.exec()
+                if _msg_weak_add.clickedButton() != _yes_weak_add:
                     return
                 
             if self.entry_manager:
@@ -548,9 +580,33 @@ class MainWindow(QMainWindow):
         notes_edit.setPlainText(entry.get("notes", ""))
         notes_edit.setMaximumHeight(80)
 
+        show_edit_pass_btn = QPushButton("👁")
+        show_edit_pass_btn.setCheckable(True)
+        show_edit_pass_btn.setFixedWidth(32)
+        show_edit_pass_btn.setToolTip("Показать/скрыть пароль")
+
+        def toggle_edit_pass(checked):
+            password_edit.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        show_edit_pass_btn.toggled.connect(toggle_edit_pass)
+
+        gen_edit_btn = QPushButton("🔄 Сгенерировать")
+        def generate_edit_password():
+            pw = PasswordGenerator().generate_password(length=16)
+            password_edit.setText(pw)
+            password_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            show_edit_pass_btn.setChecked(True)
+        gen_edit_btn.clicked.connect(generate_edit_password)
+
+        pass_edit_layout = QHBoxLayout()
+        pass_edit_layout.addWidget(password_edit)
+        pass_edit_layout.addWidget(show_edit_pass_btn)
+        pass_edit_layout.addWidget(gen_edit_btn)
+
         form_layout.addRow("Название:", title_edit)
         form_layout.addRow("Логин:", username_edit)
-        form_layout.addRow("Пароль:", password_edit)
+        form_layout.addRow("Пароль:", pass_edit_layout)
         form_layout.addRow("URL:", url_edit)
         form_layout.addRow("Заметки:", notes_edit)
 
@@ -575,12 +631,14 @@ class MainWindow(QMainWindow):
                 return
 
             if not PasswordValidator.validate_password_strength(new_password):
-                reply = QMessageBox.question(
-                    self, "Слабый пароль",
-                    "Пароль не соответствует требованиям безопасности.\nВсё равно сохранить?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-                )
-                if reply == QMessageBox.StandardButton.No:
+                _msg_weak_edit = QMessageBox(self)
+                _msg_weak_edit.setWindowTitle("Слабый пароль")
+                _msg_weak_edit.setText("Пароль не соответствует требованиям безопасности.\nВсё равно сохранить?")
+                _msg_weak_edit.setIcon(QMessageBox.Icon.Warning)
+                _yes_weak_edit = _msg_weak_edit.addButton("Да", QMessageBox.ButtonRole.YesRole)
+                _msg_weak_edit.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+                _msg_weak_edit.exec()
+                if _msg_weak_edit.clickedButton() != _yes_weak_edit:
                     return
             
             if self.entry_manager:
@@ -622,11 +680,14 @@ class MainWindow(QMainWindow):
         self._on_delete_entry_by_id(entry_id)
 
     def _on_delete_entry_by_id(self, entry_id: str):
-        reply = QMessageBox.question(
-            self, "Подтверждение", "Удалить выбранную запись?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-        )
-        if reply != QMessageBox.StandardButton.Yes:
+        _msg_del = QMessageBox(self)
+        _msg_del.setWindowTitle("Подтверждение")
+        _msg_del.setText("Удалить выбранную запись?")
+        _msg_del.setIcon(QMessageBox.Icon.Question)
+        _yes_del = _msg_del.addButton("Да", QMessageBox.ButtonRole.YesRole)
+        _msg_del.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+        _msg_del.exec()
+        if _msg_del.clickedButton() != _yes_del:
             return
         if self.entry_manager:
             try:
@@ -675,6 +736,58 @@ class MainWindow(QMainWindow):
     # ------------------------
     def _show_about(self):
         QMessageBox.information(self, "О программе", "Secure Vault\nВерсия 0.4\nУчебный проект")
+
+    # ------------------------
+    # Резервная копия 
+    # ------------------------
+    def _on_new_vault(self):
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Создать хранилище")
+        msg.setText("Создать новое хранилище?\nТекущий сеанс будет завершён.")
+        msg.setIcon(QMessageBox.Icon.Question)
+        yes_btn = msg.addButton("Да", QMessageBox.ButtonRole.YesRole)
+        msg.addButton("Нет", QMessageBox.ButtonRole.NoRole)
+        msg.exec()
+        if msg.clickedButton() == yes_btn:
+            from gui.setup_wizard import SetupWizard
+            wizard = SetupWizard()
+            wizard.exec()
+
+    def _on_open_vault(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Открыть хранилище", "",
+            "Database Files (*.db);;All Files (*)"
+        )
+        if path:
+            QMessageBox.information(
+                self, "Открыть хранилище",
+                f"Файл выбран:\n{path}\n\nПерезапустите приложение — при старте будет предложен вход в выбранную БД.\n"
+                f"(Для автоматического переключения обновите путь в настройках конфигурации.)"
+            )
+
+    def _on_backup_vault(self):
+        if not self.entry_manager:
+            QMessageBox.warning(self, "Ошибка", "Хранилище не инициализировано")
+            return
+        db_obj = getattr(self.entry_manager, 'db', None)
+        db_path = getattr(db_obj, 'db_path', None) if db_obj else None
+        if not db_path:
+            QMessageBox.warning(self, "Ошибка", "Не удалось определить путь к базе данных")
+            return
+        from pathlib import Path
+        default_name = f"backup_{Path(db_path).stem}.db"
+        save_path, _ = QFileDialog.getSaveFileName(
+            self, "Сохранить резервную копию", default_name,
+            "Database Files (*.db);;All Files (*)"
+        )
+        if not save_path:
+            return
+        try:
+            import shutil
+            shutil.copy2(db_path, save_path)
+            QMessageBox.information(self, "Готово", f"Резервная копия сохранена:\n{save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось создать резервную копию:\n{e}")
 
     # ------------------------
     # Логи и настройки
@@ -731,10 +844,16 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, _update)
         
     def closeEvent(self, event):
-        # останавливаем периодическую верификацию при закрытии приложения
+        #корректное завершение — останавливаем все компоненты
         if self.log_verifier:
             self.log_verifier.stop_periodic_verification()
+        if hasattr(self, '_status_timer'):
+            self._status_timer.stop()
+        if hasattr(self, '_tray'):
+            self._tray.hide()
         super().closeEvent(event)
+        from PyQt6.QtWidgets import QApplication
+        QApplication.instance().quit()
 
         # показываем индикатор прогресса пока идёт проверка
         from PyQt6.QtWidgets import QProgressDialog
@@ -918,5 +1037,3 @@ class MainWindow(QMainWindow):
 
         self._verify_thread.done.connect(_on_done)
         self._verify_thread.start()
-        
-    
