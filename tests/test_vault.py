@@ -1,3 +1,6 @@
+# Тесты хранилища паролей: CRUD-операции, события, индексы БД, шифрование.
+# Спринт 5 — проверяет что данные шифруются при записи и корректно
+# расшифровываются при чтении, а все операции порождают правильные события.
 from database.db import DatabasePool
 from core.crypto.key_storage import KeyStorage
 from core.key_manager import KeyManager
@@ -12,6 +15,7 @@ def test_entry_manager_crud_events(tmp_path):
     pool.migrate()
 
     key_storage = KeyStorage(pool)
+    # Параметры KDF занижены для скорости тестов (argon2_time=3 вместо 10+)
     km = KeyManager(key_storage, {
         "argon2_time": 3,
         "argon2_memory": 65536,
@@ -24,6 +28,7 @@ def test_entry_manager_crud_events(tmp_path):
 
     events_received = []
 
+    # Подписываемся на события через глобальный event bus
     def on_created(entry_id=None):
         events_received.append(("created", entry_id))
 
@@ -44,7 +49,9 @@ def test_entry_manager_crud_events(tmp_path):
         "password": "pass", "url": "https://site",
         "notes": "note", "tags": "test"
     })
-    
+
+    # Проверяем что category присутствует в ответе даже если не передавалась
+    # — дефолтное значение должно выставляться автоматически
     entry = em.get_entry(entry_id)
     assert "category" in entry
     assert entry["category"] == ""  # дефолт если не передан
@@ -57,16 +64,19 @@ def test_entry_manager_crud_events(tmp_path):
 
     em.delete_entry(entry_id)
 
+    # Проверяем что все три события были опубликованы с правильным entry_id
     assert ("created", entry_id) in events_received
     assert ("updated", entry_id) in events_received
     assert ("deleted", entry_id) in events_received
 
+    # Обязательно отписываемся после теста чтобы не загрязнять глобальный bus
     unsubscribe("EntryCreated", on_created)
     unsubscribe("EntryUpdated", on_updated)
     unsubscribe("EntryDeleted", on_deleted)
 
 
 def test_vault_entries_indices_created(tmp_path):
+    #Проверяет что migrate() создаёт нужные индексы для таблицы vault_entries.
     db_file = tmp_path / "test.db"
     pool = DatabasePool(str(db_file))
     pool.migrate()
@@ -80,7 +90,9 @@ def test_vault_entries_indices_created(tmp_path):
     assert "idx_vault_entries_updated_at" in indices
     assert "idx_vault_entries_tags" in indices
 
+
 def test_crud_100_entries(tmp_path):
+    #Проверяет корректность при работе с реальными объёмами данных:
     db_file = tmp_path / "test_100.db"
     pool = DatabasePool(str(db_file))
     pool.migrate()
@@ -97,7 +109,7 @@ def test_crud_100_entries(tmp_path):
 
     entry_manager = EntryManager(pool, key_manager)
 
-    # создаём 100 записей
+    # Создаём 100 уникальных записей с разными данными
     ids = []
     for i in range(100):
         eid = entry_manager.create_entry({
@@ -106,39 +118,37 @@ def test_crud_100_entries(tmp_path):
             "password": f"pass{i}",
             "url": f"https://example{i}.com",
             "notes": f"Note {i}",
-            "tags": f"tag{i % 10}"
+            "tags": f"tag{i % 10}"  # 10 разных тегов циклически
         })
         ids.append(eid)
 
-    # проверяем, что все 100 записей читаются
     all_entries = entry_manager.get_all_entries()
     assert len(all_entries) == 100
 
-    # обновляем каждую запись (меняем пароль)
+    # Обновляем пароль у каждой записи — проверяем что update не ломает другие поля
     for i, eid in enumerate(ids):
         entry_manager.update_entry(eid, {"password": f"newpass{i}"})
 
-    # проверяем, что пароли обновились
     for i, eid in enumerate(ids):
         entry = entry_manager.get_entry(eid)
         assert entry["password"] == f"newpass{i}"
 
-    # удаляем каждую вторую запись (50 штук)
+    # Удаляем чётные записи (50 штук) — жёсткое удаление для простоты проверки
     for i, eid in enumerate(ids):
         if i % 2 == 0:
-            entry_manager.delete_entry(eid, soft_delete=False)  # жёсткое удаление для простоты
+            entry_manager.delete_entry(eid, soft_delete=False)
 
-    # проверяем, что осталось 50 записей
     remaining = entry_manager.get_all_entries()
     assert len(remaining) == 50
 
-    # проверяем, что оставшиеся записи не повреждены
+    # Оставшиеся записи не должны быть повреждены
     for entry in remaining:
         assert "title" in entry
         assert "password" in entry
 
+
 def test_encryption_cycle(tmp_path):
-    # инициализация окружения
+    #Проверяет полный цикл шифрования: запись → проверка BLOB → расшифровка.
     db_file = tmp_path / "enc_cycle.db"
     pool = DatabasePool(str(db_file))
     pool.migrate()
@@ -155,7 +165,6 @@ def test_encryption_cycle(tmp_path):
 
     entry_manager = EntryManager(pool, key_manager)
 
-    # создаём запись с известными данными
     known_data = {
         "title":    "MyBank",
         "username": "john@example.com",
@@ -167,8 +176,7 @@ def test_encryption_cycle(tmp_path):
     entry_id = entry_manager.create_entry(known_data)
     assert entry_id
 
-    # читаем сырой BLOB из БД и проверяем
-    # что открытый текст в нём не присутствует
+    # Читаем сырой BLOB напрямую из БД — обходим прикладной слой
     with pool.connection() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -180,14 +188,15 @@ def test_encryption_cycle(tmp_path):
     assert row is not None
     raw_blob = row["encrypted_data"]
 
-    # blob должен быть байтами, не строкой
+    # BLOB должен быть байтами, не строкой — строка означала бы хранение plaintext
     assert isinstance(raw_blob, bytes)
 
-    # blob должен быть длиннее nonce(12) + tag(16) = минимум 28 байт
+    # Минимальный размер: nonce(12 байт) + GCM auth tag(16 байт) = 28 байт
+    # Если BLOB меньше — шифрование не работает
     assert len(raw_blob) > 28
 
-    # ни одно из чувствительных полей не должно читаться в blob как UTF-8 текст
-    # пробуем декодировать — если получится и там есть открытый текст, тест падает
+    # Пробуем декодировать BLOB как UTF-8: если успешно — проверяем
+    # что ни одно sensitive поле там не присутствует в открытом виде
     sensitive_values = [
         known_data["title"],
         known_data["username"],
@@ -198,17 +207,15 @@ def test_encryption_cycle(tmp_path):
     ]
     try:
         blob_as_text = raw_blob.decode("utf-8")
-        # если декодировалось — проверяем что ни одного значения там нет
         for value in sensitive_values:
             assert value not in blob_as_text, (
                 f"Открытый текст '{value}' найден в зашифрованном BLOB — "
                 f"шифрование не работает!"
             )
     except UnicodeDecodeError:
-        # blob не декодируется как UTF-8 — это ожидаемо для зашифрованных данных
-        pass
+        pass  # BLOB не декодируется как UTF-8 — это ожидаемо для шифротекста
 
-    # расшифровываем и проверяем целостность данных
+    # Расшифровываем через прикладной слой и проверяем целостность данных
     decrypted = entry_manager.get_entry(entry_id)
 
     assert decrypted["title"]    == known_data["title"]
@@ -218,6 +225,6 @@ def test_encryption_cycle(tmp_path):
     assert decrypted["notes"]    == known_data["notes"]
     assert decrypted["category"] == known_data["category"]
 
-    # версия и id должны быть проставлены автоматически
+    # version и id должны проставляться автоматически при создании
     assert decrypted["version"] == 1
     assert decrypted["id"]      == entry_id
