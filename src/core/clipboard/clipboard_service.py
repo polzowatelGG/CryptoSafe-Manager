@@ -41,7 +41,8 @@ class SecureBuffer:
                 )
             else:
                 # Unix: mlock
-                libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                libc_name = "libc.dylib" if sys.platform == 'darwin' else "libc.so.6"
+                libc = ctypes.CDLL(libc_name, use_errno=True)
                 libc.mlock(
                     ctypes.cast(self._buf, ctypes.c_void_p),
                     ctypes.c_size_t(self._size)
@@ -57,11 +58,13 @@ class SecureBuffer:
         return bytes(self._buf).decode('utf-8')
 
     def wipe(self):
-        # затираем буфер нулями перед освобождением
-        if self._buf:
-            ctypes.memset(self._buf, 0, self._size)
-
-        # снимаем блокировку памяти
+        if self._buf is None:
+            return
+        # затираем данные — побайтово + memset
+        for i in range(self._size):
+            self._buf[i] = b'\x00'
+        ctypes.memset(self._buf, 0, self._size)
+        # снимаем блокировку страницы
         if self._locked:
             try:
                 if sys.platform == 'win32':
@@ -70,22 +73,21 @@ class SecureBuffer:
                         ctypes.c_size_t(self._size)
                     )
                 else:
-                    libc = ctypes.CDLL("libc.so.6", use_errno=True)
+                    libc_name = "libc.dylib" if sys.platform == 'darwin' else "libc.so.6"
+                    libc = ctypes.CDLL(libc_name, use_errno=True)
                     libc.munlock(
                         ctypes.cast(self._buf, ctypes.c_void_p),
                         ctypes.c_size_t(self._size)
                     )
             except Exception:
                 pass
-
-        self._buf = None
-        self._locked = False
-
+            self._locked = False
+            
     def __del__(self):
-        # гарантируем затирание при сборке мусора
-        if self._buf:
+        if self._buf is not None:
             self.wipe()
-
+        self._buf = None   # освобождаем только здесь, в деструкторе
+        
 class SecureClipboardItem: # класс для хранения данных буфера обмена в зашифрованном виде вместе с метаданными
     def __init__(self, data: str, data_type: str, source_entry_id: Optional[str],
                  copied_at: datetime, mask: bytes):
