@@ -156,3 +156,6 @@ def get_platform_clipboard_adapter(): # функция для получения
         except Exception:
             pass
     return PyperclipAdapter()
+
+
+get_platform_adapter = get_platform_clipboard_adapter
