@@ -206,8 +206,102 @@ class DatabasePool: # класс для управления пулом соед
 
         conn.commit()
         
-        cur.execute("DROP TABLE IF EXIST audit_log_old")
+        cur.execute("DROP TABLE IF EXISTS audit_log_old")
         conn.commit
+        
+    # миграция версия 3: import/export и sharing 
+    def _migration_3(self, conn: sqlite3.Connection):
+        cur = conn.cursor()
+ 
+        # таблица для хранения метаданных общих записей
+        # shared_id       — уникальный идентификатор шаринга
+        # original_entry_id — ссылка на vault_entries.id (логическая)
+        # encryption_method — "password" | "public_key"
+        # recipient_info  — идентификатор/контакт получателя
+        # permissions     — JSON: {"read": true, "edit": false}
+        # shared_at       — время создания шаринга
+        # expires_at      — время истечения (NULL = бессрочно)
+        # package_hash    — SHA-256 зашифрованного пакета для верификации
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS shared_entries (
+            share_id          TEXT PRIMARY KEY, 
+            original_entry_id TEXT NOT NULL,
+            encryption_method TEXT NOT NULL,
+            recipient_info    TEXT,
+            permissions       TEXT NOT NULL DEFAULT '{"read": true, "edit": false}',
+            shared_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            expires_at        TIMESTAMP,
+            package_hash      TEXT
+        )
+        """)
+ 
+        # таблица истории импорта/экспорта
+        # operation_type  — "import" | "export"
+        # format          — "encrypted_json" | "csv" | "bitwarden" | "lastpass"
+        # encryption_used — boolean (0/1)
+        # entry_count     — количество записей в операции
+        # file_size       — размер файла в байтах
+        # file_path       — путь к файлу (только имя, не полный путь)
+        # checksum        — SHA-256 файла для верификации
+        # verified        — результат верификации (0/1)
+        # created_at      — время операции
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS import_export_history (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            operation_type TEXT NOT NULL,
+            format         TEXT NOT NULL,
+            encryption_used INTEGER NOT NULL DEFAULT 1,
+            entry_count    INTEGER NOT NULL DEFAULT 0,
+            file_size      INTEGER NOT NULL DEFAULT 0,
+            file_path      TEXT,
+            checksum       TEXT,
+            verified       INTEGER NOT NULL DEFAULT 0,
+            created_at     TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+ 
+        # таблица контактов для хранения публичных ключей
+        # contact_id      — уникальный идентификатор
+        # name            — отображаемое имя контакта
+        # identifier      — email / username / другой идентификатор
+        # public_key_pem  — публичный ключ RSA/ECC в PEM формате
+        # key_fingerprint — отпечаток ключа для верификации
+        # last_used       — время последнего использования
+        cur.execute("""
+        CREATE TABLE IF NOT EXISTS contacts (
+            contact_id      TEXT PRIMARY KEY,
+            name            TEXT NOT NULL,
+            identifier      TEXT,
+            public_key_pem  TEXT,
+            key_fingerprint TEXT,
+            created_at      TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            last_used       TIMESTAMP
+        )
+        """)
+ 
+        # индексы для производительности
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_shared_entries_original
+        ON shared_entries (original_entry_id)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_shared_entries_expires
+        ON shared_entries (expires_at)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_import_export_history_type
+        ON import_export_history (operation_type)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_import_export_history_created
+        ON import_export_history (created_at)
+        """)
+        cur.execute("""
+        CREATE INDEX IF NOT EXISTS idx_contacts_identifier
+        ON contacts (identifier)
+        """)
+ 
+        conn.commit()
 
     
     @staticmethod
@@ -220,10 +314,10 @@ class DatabasePool: # класс для управления пулом соед
         # добавляем колонку только если её ещё нет
         if column not in existing_columns:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
-            
         
     @contextmanager
-    def transaction(self): # контекстный менеджер для управления транзакциями с базой данных. он обеспечивает автоматическое начало транзакции при входе в блок и коммит или откат транзакции при выходе из блока в зависимости от наличия исключений. этот метод позволяет
+    def transaction(self): # контекстный менеджер для управления транзакциями с базой данных. он обеспечивает автоматическое 
+        #начало транзакции при входе в блок и коммит или откат транзакции при выходе из блока в зависимости от наличия исключений. этот метод позволяет
         #гарантировать целостность данных при выполнении нескольких связанных операций с базой данных, обеспечивая атомарность и согласованность.
         with self.connection() as conn:
             try:
