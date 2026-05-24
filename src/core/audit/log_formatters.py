@@ -10,7 +10,7 @@ from core.audit.log_signer import LogSigner
 
 
 class LogFormatter: # класс для форматирования и экспорта логов аудита в разные форматы (JSON, CSV, PDF)
-    def __init__(self, db: DatabasePool, signer: LogSigner, key_manager: None, audit_logger: None):
+    def __init__(self, db, signer, key_manager=None, audit_logger=None):
         self.db = db
         self.signer = signer
         self.key_manager = key_manager
