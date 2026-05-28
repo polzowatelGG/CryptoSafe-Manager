@@ -110,9 +110,10 @@ class VaultExporter:
         if not self.key_manager.is_unlocked():
             raise PermissionError("Хранилище заблокировано. Разблокируйте перед экспортом.")
 
-        if not password:
-            raise ValueError("Пароль для экспорта обязателен.")
-
+        # Проверяем только ДЛЯ ЗАШИФРОВАННОГО формата
+        if format == "encrypted_json" and not password:
+            raise ValueError("Для зашифрованного экспорта необходим пароль.")
+        
         # Получаем записи
         entries = self._get_entries_for_export(entry_ids, exclude_fields)
         if not entries:
@@ -166,78 +167,64 @@ class VaultExporter:
 
     # Форматы экспорта
     def _export_encrypted_json(
-        self,
-        filepath: str,
-        entries: List[Dict],
-        export_key: bytes,
-        salt: bytes,
-        compress: bool,
-    ) -> int:
-        
-        # Нативный зашифрованный формат CryptoSafe (FMT-1, EXP-2).
+    self,
+    filepath: str,
+    entries: List[Dict],
+    export_key: bytes,
+    salt: bytes,
+    compress: bool,
+) -> int:
+        plaintext = None
+        try:
+            # Готовим plaintext
+            payload = {
+                "version":      "1.0",
+                "exported_at":  datetime.utcnow().isoformat() + "Z",
+                "entry_count":  len(entries),
+                "entries":      entries,
+            }
+            plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
-        # Структура файла:
-        # {
-        #     "version": "1.0",
-        #     "cryptosafe_export": true,
-        #     "timestamp": "...",
-        #     "encryption": {
-        #         "algorithm": "AES-256-GCM",
-        #         "key_derivation": "PBKDF2-HMAC-SHA256",
-        #         "iterations": 100000,
-        #         "salt": "base64...",
-        #         "compressed": false
-        #     },
-        #     "data": "base64(nonce + ciphertext + tag)",
-        #     "integrity": {
-        #         "hash": "sha256 of plaintext",
-        #         "hash_algorithm": "SHA256"
-        #     }
-        # }
+            # Опциональное сжатие
+            if compress:
+                plaintext = gzip.compress(plaintext)
 
-        # Готовим plaintext
-        payload = {
-            "version":      "1.0",
-            "exported_at":  datetime.utcnow().isoformat() + "Z",
-            "entry_count":  len(entries),
-            "entries":      entries,
-        }
-        plaintext = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            # Хэш до шифрования для верификации при импорте
+            integrity_hash = hashlib.sha256(plaintext).hexdigest()
 
-        # Опциональное сжатие (EXP-3)
-        if compress:
-            plaintext = gzip.compress(plaintext)
+            # Шифруем
+            enc = _encrypt_payload(plaintext, export_key)
 
-        # Хэш до шифрования для верификации при импорте
-        integrity_hash = hashlib.sha256(plaintext).hexdigest()
+            # Собираем итоговый документ
+            document = {
+                "version":           "1.0",
+                "cryptosafe_export": True,
+                "timestamp":         datetime.utcnow().isoformat() + "Z",
+                "encryption": {
+                    "algorithm":      "AES-256-GCM",
+                    "key_derivation": "PBKDF2-HMAC-SHA256",
+                    "iterations":     100_000,
+                    "salt":           b64encode(salt).decode("ascii"),
+                    "compressed":     compress,
+                    "nonce":          enc["nonce"],
+                },
+                "data":      enc["ciphertext"],
+                "integrity": {
+                    "hash":           integrity_hash,
+                    "hash_algorithm": "SHA256",
+                },
+            }
 
-        # Шифруем
-        enc = _encrypt_payload(plaintext, export_key)
+            with open(filepath, "w", encoding="utf-8") as f:
+                json.dump(document, f, ensure_ascii=False, indent=2)
 
-        # Собираем итоговый документ
-        document = {
-            "version":          "1.0",
-            "cryptosafe_export": True,
-            "timestamp":        datetime.utcnow().isoformat() + "Z",
-            "encryption": {
-                "algorithm":     "AES-256-GCM",
-                "key_derivation": "PBKDF2-HMAC-SHA256",
-                "iterations":    100_000,
-                "salt":          b64encode(salt).decode("ascii"),
-                "compressed":    compress,
-                "nonce":         enc["nonce"],
-            },
-            "data":      enc["ciphertext"],
-            "integrity": {
-                "hash":           integrity_hash,
-                "hash_algorithm": "SHA256",
-            },
-        }
+            return len(entries)
 
-        with open(filepath, "w", encoding="utf-8") as f:
-            json.dump(document, f, ensure_ascii=False, indent=2)
-
-        return len(entries)
+        finally:
+            #  обнуляем plaintext сразу после использования
+            if plaintext is not None:
+                plaintext = bytearray(len(plaintext))
+                del plaintext
 
     def _export_csv(
         self,
@@ -248,7 +235,7 @@ class VaultExporter:
         compress: bool,
     ) -> int:
 
-        # Экспорт в CSV (FMT-3).
+        # Экспорт в CSV.
         # По умолчанию plaintext — пользователь сам отвечает за безопасность хранения.
         # Предупреждение записывается в первую строку как комментарий.
 
@@ -276,47 +263,53 @@ class VaultExporter:
         self,
         filepath: str,
         entries: List[Dict],
-        export_key: bytes,
-        salt: bytes,
+        export_key: Optional[bytes],
+        salt: Optional[bytes],
         compress: bool,
     ) -> int:
-
-        # Экспорт в формат совместимый с Bitwarden JSON (EXP-1).
-        # Bitwarden items: type=1 (login), login.username, login.password, login.uris
+        from datetime import datetime
+        import uuid
+        
         items = []
+        now = datetime.utcnow().isoformat().replace('+00:00', 'Z')
+        
         for entry in entries:
-            uris = []
             url = entry.get("url", "").strip()
-            if url:
-                uris.append({"match": None, "uri": url})
-
+            
+            # Валидация URL
+            if url and url not in ["-", "idk", "none", "", "'-"]:
+                if not url.startswith(("http://", "https://")):
+                    if "." in url and " " not in url:
+                        url = f"https://{url}"
+            else:
+                url = None
+            
             item = {
-                "id":             str(uuid.uuid4()),
-                "organizationId": None,
-                "folderId":       None,
-                "type":           1,  # login
-                "name":           entry.get("title", ""),
-                "notes":          entry.get("notes") or None,
-                "favorite":       False,
+                "type": 1,
+                "name": entry.get("title", ""),
+                "favorite": False,
+                "reprompt": 0,
+                "id": str(uuid.uuid4()),
+                "fields": [],
                 "login": {
                     "username": entry.get("username", ""),
                     "password": entry.get("password", ""),
-                    "totp":     entry.get("totp_secret") or None,
-                    "uris":     uris if uris else None,
+                    "uris": [{"uri": url}] if url else None
                 },
-                "collectionIds": [],
+                "passwordHistory": [],
+                "creationDate": now,
+                "revisionDate": now
             }
             items.append(item)
-
+        
         document = {
             "encrypted": False,
-            "folders":   [],
-            "items":     items,
+            "items": items
         }
-
+        
         with open(filepath, "w", encoding="utf-8") as f:
             json.dump(document, f, ensure_ascii=False, indent=2)
-
+        
         return len(entries)
 
     # Внутренние методы
