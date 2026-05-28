@@ -20,7 +20,7 @@ class LogSigner:
         hkdf = HKDF(
             algorithm=hashes.SHA256(),
             length=32,
-            salt= None,
+            salt= b'cryptosafe-audit-signing-salt-v1',
             info=b'audit-signing',
         )
         signing_key_material = hkdf.derive(master_key)
@@ -35,7 +35,6 @@ class LogSigner:
             return signature
         except Exception as e:            # обработка ошибок при подписании
             raise Exception(f"Error signing data: {str(e)}")
-        pass
     
     def verify(self, data: bytes, signature: bytes) -> bool:
         try:
@@ -46,7 +45,6 @@ class LogSigner:
             return False
         except Exception as e:            # обработка других ошибок при верификации
             raise Exception(f"Error verifying signature: {str(e)}")
-        pass    
     
     def get_public_key_bytes(self) -> bytes:
         # возвращаем публичный ключ в виде байтов для хранения или передачи
