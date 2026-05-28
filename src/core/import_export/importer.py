@@ -15,7 +15,7 @@ from base64 import b64decode
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-
+import logging as _imp_log
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
@@ -47,6 +47,7 @@ _MALICIOUS_PATTERNS = [
     re.compile(r"data:text/html", re.IGNORECASE),
     re.compile(r"vbscript:", re.IGNORECASE),
 ]
+_CSV_FORMULA_RE = re.compile(r'^[=+\-@|]')
 
 
 # Вспомогательные функции
@@ -83,6 +84,8 @@ def _sanitize_field(value: Any, field_name: str) -> str:
             text = pattern.sub("[REMOVED]", text)
 
     # Обрезаем до лимита
+    if _CSV_FORMULA_RE.match(text):
+        text = "'" + text  # апостроф — стандартная защита от formula injection
     max_len = FIELD_MAX_LEN.get(field_name, 1000)
     return text[:max_len]
 
@@ -139,10 +142,7 @@ def _detect_format(filepath: str) -> str:
 
     # JSON без признаков известных форматов
     if ext in (".json",):
-        return "csv"  # fallback на CSV-парсер не подходит; оставим unknown
         return "unknown"
-
-    return "unknown"
 
 
 def _entry_fingerprint(entry: Dict[str, Any]) -> str:
@@ -154,6 +154,14 @@ def _entry_fingerprint(entry: Dict[str, Any]) -> str:
         (entry.get("url")      or "").lower().strip()
     )
     return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _entries_are_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
+    fields_to_compare = ["title", "username", "password", "url", "notes", "category", "tags"]
+    for field in fields_to_compare:
+        if (existing.get(field) or "") != (incoming.get(field) or ""):
+            return False
+    return True
 
 
 # Результат импорта
@@ -223,6 +231,11 @@ class VaultImporter:
         #     FileNotFoundError: файл не найден
         if not self.key_manager.is_unlocked():
             raise PermissionError("Хранилище заблокировано.")
+
+        _imp_log.getLogger(__name__).warning(
+            "IMP-01: Import running in main process without sandbox isolation. "
+            "Only import files from trusted sources."
+        )
 
         if not os.path.exists(filepath):
             raise FileNotFoundError(f"Файл не найден: {filepath}")
@@ -335,12 +348,14 @@ class VaultImporter:
                 fingerprint = _entry_fingerprint(entry)
 
                 if mode == "merge" and fingerprint in existing_fingerprints:
-                    # Обновляем существующую запись
                     existing_id = existing_fingerprints[fingerprint]
+                    existing_entry = self.entry_manager.get_entry(existing_id)
+                    if _entries_are_equal(existing_entry, entry):
+                        result.skipped += 1
+                        continue
                     self.entry_manager.update_entry(existing_id, entry)
                     result.updated += 1
                 else:
-                    # Добавляем новую запись
                     self.entry_manager.create_entry(entry)
                     result.imported += 1
 
