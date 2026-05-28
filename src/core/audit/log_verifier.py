@@ -99,40 +99,38 @@ class LogVerifier: # класс для проверки целостности �
         self._periodic_callback = on_result
 
         def _loop():
-            while self._periodic_running:
-                waited = 0
-                interval_seconds = interval_hours * 3600
-                while (
-                    waited < interval_seconds
-                    and self._periodic_running
-                ):
-                    threading.Event().wait(timeout=1)
-                    waited += 1
-
-                if not self._periodic_running:
-                    break
-
+            if self._periodic_running:
                 try:
                     result = self._verify_last_n(n=1000)
-                    result['checked_at'] = (
-                        datetime.datetime.utcnow().isoformat() + "Z"
-                    )
+                    result['checked_at'] = datetime.datetime.utcnow().isoformat() + "Z"
                     if self._periodic_callback:
                         self._periodic_callback(result)
                 except Exception as e:
                     if self._periodic_callback:
                         self._periodic_callback({
-                            'verified':   False,
-                            'error':      str(e),
+                            'verified': False,
+                            'error': str(e),
                             'checked_at': datetime.datetime.utcnow().isoformat() + "Z",
                         })
 
-        self._periodic_thread = threading.Thread(
-            target=_loop,
-            daemon=True,
-            name="audit-periodic-verifier"
-        )
-        self._periodic_thread.start()
+            _wait_event = threading.Event()
+            while self._periodic_running:
+                _wait_event.wait(timeout=interval_hours * 3600)
+                _wait_event.clear()
+                if not self._periodic_running:
+                    break
+                try:
+                    result = self._verify_last_n(n=1000)
+                    result['checked_at'] = datetime.datetime.utcnow().isoformat() + "Z"
+                    if self._periodic_callback:
+                        self._periodic_callback(result)
+                except Exception as e:
+                    if self._periodic_callback:
+                        self._periodic_callback({
+                            'verified': False,
+                            'error': str(e),
+                            'checked_at': datetime.datetime.utcnow().isoformat() + "Z",
+                        })
 
     def stop_periodic_verification(self):
         # останавливаем периодическую верификацию
