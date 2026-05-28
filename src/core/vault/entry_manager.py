@@ -99,7 +99,7 @@ class EntryManager:
             )
 
         self.events.publish("EntryCreated", entry_id=entry_id)
-
+        self.invalidate_search_cache()
         return entry_id
 
     # чтение одной записи по id
@@ -125,9 +125,20 @@ class EntryManager:
         for row in rows:
             try:
                 result.append(self._decrypt(row["encrypted_data"]))
-            except Exception:
-                # не упадет из-за одной битой записи 
+            except ValueError as _ve:
+                # конкретный тип исключения 
+                import logging as _em_log
+                _em_log.getLogger(__name__).warning(
+                    "Failed to decrypt entry (wrong key or corrupted data): %s", _ve
+                )
                 continue
+            except Exception as _e:
+                import logging as _em_log
+                _em_log.getLogger(__name__).error(
+                    "Unexpected error decrypting entry: %s", _e
+                )
+                continue
+
             
         try: 
             self.events.publish(
@@ -141,13 +152,19 @@ class EntryManager:
         return result
     
     def search_entries(self, query: str) -> list:
-    # поиск по записям с анонимным логированием запроса 
-    # логируем факт поиска и длину запроса но НЕ сам запрос
-        all_entries = self.get_all_entries()
+    # используем кэш расшифрованных записей если он актуален
+        if not hasattr(self, '_entry_cache') or self._entry_cache is None:
+            self._entry_cache = self.get_all_entries()
+            self._cache_version = self._current_version()
+
+        # инвалидируем кэш при изменениях
+        if self._cache_version != self._current_version():
+            self._entry_cache = self.get_all_entries()
+            self._cache_version = self._current_version()
 
         query_lower = query.lower().strip()
         results = [
-            e for e in all_entries
+            e for e in self._entry_cache
             if query_lower in e.get("title",    "").lower()
             or query_lower in e.get("username", "").lower()
             or query_lower in e.get("url",      "").lower()
@@ -155,8 +172,6 @@ class EntryManager:
             or query_lower in e.get("category", "").lower()
         ]
 
-        # логируем анонимно: длина запроса, количество результатов
-        # но не сам текст запроса (может содержать чувствительные данные)
         try:
             self.events.publish(
                 "VaultSearched",
@@ -168,6 +183,21 @@ class EntryManager:
             pass
 
         return results
+
+    def _current_version(self) -> int:
+        #возвращает счётчик версий из БД для инвалидации кэша
+        try:
+            with self.db.connection() as conn:
+                row = conn.execute(
+                    "SELECT MAX(rowid) FROM vault_entries"
+                ).fetchone()
+            return row[0] if row and row[0] else 0
+        except Exception:
+            return -1
+
+    def invalidate_search_cache(self):
+        # явная инвалидация кэша при CRUD-операциях
+        self._entry_cache = None
 
     # обновление 
     def update_entry(self, entry_id: str, new_data: dict):
@@ -194,7 +224,7 @@ class EntryManager:
             )
 
         self.events.publish("EntryUpdated", entry_id=entry_id)
-
+        self.invalidate_search_cache()
 
     # удаление 
     def delete_entry(self, entry_id: str, soft_delete: bool = True):
@@ -215,10 +245,11 @@ class EntryManager:
                 (entry_id,),
             )
         self.events.publish("EntryDeleted", entry_id=entry_id)
+        self.invalidate_search_cache()
 
     def reencrypt_all(self, old_key: bytes, new_key: bytes, conn=None):
         if conn is None:
-            with self.db.connection() as temp_conn:
+            with self.db.transaction() as temp_conn:
                 self.reencrypt_all(old_key, new_key, conn=temp_conn)
             return
 
