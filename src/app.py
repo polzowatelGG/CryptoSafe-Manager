@@ -81,7 +81,7 @@ def main():
             "pbkdf2_iterations":  100000,
         })
 
-        state_manager = StateManager(config, event_bus= event_bus)
+        state_manager = StateManager(config, key_manager=key_manager, event_bus=event_bus)
         authenticator = Authenticator(key_manager, event_bus, state_manager)
 
         login_dialog = LoginDialog(authenticator)
