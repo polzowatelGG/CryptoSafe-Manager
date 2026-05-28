@@ -1,6 +1,7 @@
 # этот модуль содержит адаптеры для взаимодействия с буфером обмена на разных платформах, и выбирает подходящий адаптер в зависимости от операционной системы и доступных библиотек, 
 # чтобы обеспечить надежную работу с буфером обмена в сервисе буфера обмена, и позволяет легко расширять поддержку новых платформ в будщем, 
 # а также обеспечивает единый интерфейс для сервиса буфера обмена, чтобы он мог работать с любым адаптером без изменений в коде сервиса 
+import ctypes
 from typing import Optional
 import pyperclip
 import platform
@@ -49,7 +50,11 @@ class WinPlatformClipboardAdapter: # адаптер для Windows, которы
         self.win32clipboard = win32clipboard
 
     def get_change_count(self) -> int: 
-        return 0
+        try:
+            return ctypes.windll.user32.GetClipboardSequenceNumber()
+        except Exception:
+            return 0
+
 
     def copy_to_clipboard(self, data: str) -> bool:
         try:
