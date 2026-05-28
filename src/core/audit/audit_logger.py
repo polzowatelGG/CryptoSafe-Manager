@@ -13,9 +13,9 @@
 
 import json
 import hashlib
+import re as _re
 from datetime import datetime
 from typing import Dict, Any, Optional
-
 
 class AuditLogger: # основной класс для логирования событий аудита
     def __init__(self, db, signer, event_bus):
@@ -269,11 +269,19 @@ class AuditLogger: # основной класс для логирования �
         )
 
     def _sanitize_details(self, details: dict) -> dict: # функция для удаления или маскировки чувствительных данных в details, таких как пароли, ключи и т.д.
-        FORBIDDEN = {"password", "key", "secret", "token", "hash", "pin"}
+        FORBIDDEN_KEYS = {"password", "key", "secret", "token", "hash", "pin",
+                      "passphrase", "credential", "private", "master"}
+        _SENSITIVE_VAL_RE = _re.compile(
+            r'(?i)(password|secret|key|token|pin|passphrase)\s*[:=]\s*\S+'
+        )
         clean = {}
         for k, v in details.items():
-            if any(f in k.lower() for f in FORBIDDEN):
+            if any(f in k.lower() for f in FORBIDDEN_KEYS):
                 clean[k] = "[REDACTED]"
+            elif isinstance(v, str) and _SENSITIVE_VAL_RE.search(v):
+                clean[k] = "[REDACTED]"
+            elif isinstance(v, dict):
+                clean[k] = self._sanitize_details(v)  # рекурсивно
             else:
                 clean[k] = v
         return clean
