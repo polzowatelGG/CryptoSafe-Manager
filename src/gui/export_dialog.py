@@ -352,20 +352,19 @@ class ExportDialog(QDialog):
         return fields
 
     def _do_export(self):
-        # Запускает экспорт
         formats = ["encrypted_json", "csv", "bitwarden"]
         idx = self.format_combo.currentIndex()
         fmt = formats[idx] if idx < len(formats) else "encrypted_json"
-
+        
         filepath = self.filepath_input.text().strip()
         if not filepath:
             QMessageBox.warning(self, "Ошибка", "Выберите файл для сохранения.")
             return
-
-        password = ""
+        
+        # Для зашифрованного формата — пароль ОБЯЗАТЕЛЕН
         if fmt == "encrypted_json":
             password = self.password_input.text()
-            confirm  = self.password_confirm.text()
+            confirm = self.password_confirm.text()
             if not password:
                 QMessageBox.warning(self, "Ошибка", "Введите пароль для экспорта.")
                 return
@@ -373,11 +372,12 @@ class ExportDialog(QDialog):
                 QMessageBox.warning(self, "Ошибка", "Пароли не совпадают.")
                 return
         else:
-            # Для открытых форматов — предупреждение
+            # Для CSV и Bitwarden — пароль НЕ НУЖЕН
+            # Предупреждение о безопасности
             msg = QMessageBox(self)
             msg.setWindowTitle("Предупреждение безопасности")
             msg.setText(
-                "Выбранный формат сохраняет пароли в открытом виде!\n\n"
+                f"Формат {fmt.upper()} сохраняет пароли в открытом виде!\n\n"
                 "Файл будет незашифрован. Продолжить?"
             )
             msg.setIcon(QMessageBox.Icon.Warning)
@@ -386,29 +386,27 @@ class ExportDialog(QDialog):
             msg.exec()
             if msg.clickedButton() != yes_btn:
                 return
-            # Используем случайный пароль как заглушку (exporter всё равно не шифрует CSV)
-            import secrets
-            password = secrets.token_hex(16)
+            password = ""
 
-        selected_ids = self._get_selected_entry_ids()
-        exclude      = self._get_exclude_fields()
+            selected_ids = self._get_selected_entry_ids()
+            exclude      = self._get_exclude_fields()
 
-        # Блокируем UI
-        self.export_btn.setEnabled(False)
-        self.progress.show()
+            # Блокируем UI
+            self.export_btn.setEnabled(False)
+            self.progress.show()
 
-        self._thread = _ExportThread(
-            exporter=self.exporter,
-            filepath=filepath,
-            password=password,
-            format=fmt,
-            entry_ids=selected_ids,
-            exclude_fields=exclude,
-            compress=self.compress_check.isChecked(),
-        )
-        self._thread.finished.connect(self._on_export_done)
-        self._thread.error.connect(self._on_export_error)
-        self._thread.start()
+            self._thread = _ExportThread(
+                exporter=self.exporter,
+                filepath=filepath,
+                password=password,
+                format=fmt,
+                entry_ids=selected_ids,
+                exclude_fields=exclude,
+                compress=self.compress_check.isChecked(),
+            )
+            self._thread.finished.connect(self._on_export_done)
+            self._thread.error.connect(self._on_export_error)
+            self._thread.start()
 
     def _on_export_done(self, count: int):
         self.progress.hide()
