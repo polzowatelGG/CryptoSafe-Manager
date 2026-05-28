@@ -16,7 +16,7 @@ class PasswordGenerator:
         if length is None:
             length = 16 + secrets.randbelow(17)
         elif length < 8:
-            raise ValueError("Password length must be at least 16 characters")
+            raise ValueError("Password length must be at least 8 characters")
 
         # Наборы символов
         lower = "abcdefghijklmnopqrstuvwxyz"
