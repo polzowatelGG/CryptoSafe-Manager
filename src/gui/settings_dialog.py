@@ -22,7 +22,7 @@ class SettingsDialog(QDialog):
         self._settings_model = None
         if self.pool:
             try:
-                self._settings_model = Settings(self.pool, AES256Placeholder)
+                self._settings_model = Settings(self.pool, AES256Placeholder())
             except Exception:
                 self._settings_model = None
 
@@ -31,7 +31,20 @@ class SettingsDialog(QDialog):
 
     def _apply_profile(self, index):
         timeouts = [30, 15, 5]
-        self.clipboard_timeout.setValue(timeouts[index])
+        if 0 <= index < len(timeouts):
+            self.clipboard_timeout.setValue(timeouts[index])
+
+    def _select_profile(self, timeout):
+        try:
+            timeout = int(timeout)
+        except Exception:
+            timeout = 30
+
+        profile_map = {30: 0, 15: 1, 5: 2}
+        index = profile_map.get(timeout, 0)
+        self.profile_combo.blockSignals(True)
+        self.profile_combo.setCurrentIndex(index)
+        self.profile_combo.blockSignals(False)
 
     def _init_ui(self):
         layout = QVBoxLayout()
@@ -200,6 +213,7 @@ class SettingsDialog(QDialog):
                 timeout = self._settings_model.get('clipboard_timeout')
                 if timeout:
                     self.clipboard_timeout.setValue(int(timeout))
+                    self._select_profile(timeout)
                 else:
                     # fallback на config если в БД ещё нет значения
                     self._load_from_config()
@@ -215,6 +229,7 @@ class SettingsDialog(QDialog):
             return
         timeout = self.config.get_preference('clipboard_timeout') or 30
         self.clipboard_timeout.setValue(int(timeout))
+        self._select_profile(timeout)
         auto_lock = self.config.get_preference('auto_lock')
         if auto_lock is not None:
             self.auto_lock_checkbox.setChecked(bool(auto_lock))
@@ -226,11 +241,10 @@ class SettingsDialog(QDialog):
         # сохраняем в зашифрованную таблицу settings 
         if self._settings_model:
             try:
-                # clipboard_timeout шифруем — это чувствительная настройка
+                # clipboard_timeout не требует дополнительного ключа шифрования в текущей реализации
                 self._settings_model.set(
-                    'clipboard_timeout', str(timeout), encrypted=True
+                    'clipboard_timeout', str(timeout), encrypted=False
                 )
-                # auto_lock не шифруем — это не секрет
                 self._settings_model.set(
                     'auto_lock', str(auto_lock), encrypted=False
                 )
