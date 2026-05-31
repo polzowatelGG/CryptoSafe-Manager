@@ -9,6 +9,7 @@ from queue import Queue, Empty
 from contextlib import contextmanager
 from typing import Callable, List
 from database.migrations import ensure_key_store_schema, ensure_audit_log_schema
+import json
 
 
 class DatabasePool: # класс для управления пулом соединений с базой данных SQLite и миграциями схемы. он обеспечивает безопасный и эффективный доступ к базе данных для хранения зашифрованных данных, аудита и настроек приложения.
@@ -23,6 +24,7 @@ class DatabasePool: # класс для управления пулом соед
         self._migrations: List[Callable[[sqlite3.Connection], None]] = [
             self._migration_1,
             self._migration_2,
+            self._migration_3,
         ]
 
     # пул соединений: методы для получения и возврата соединений с базой данных
@@ -326,5 +328,46 @@ class DatabasePool: # класс для управления пулом соед
             except:
                 conn.rollback()
                 raise
+
+    def add_import_export_history(self, *, operation_type: str, format: str, encryption_used, entry_count: int = 0,
+                                  file_size: int = 0, checksum: str = None, verification_status=None, details=None,
+                                  file_path: str = None):
+        """Insert a row into import_export_history.
+
+        Normalizes some incoming values (encryption_used -> int flag, verification_status -> verified int)
+        and stores optional details as JSON into the `file_path` column when no explicit path is given.
+        """
+        # normalize encryption_used to integer flag (1 = used, 0 = not used)
+        try:
+            if isinstance(encryption_used, (str,)):
+                enc_flag = 0 if encryption_used.lower() in ("none", "0", "false", "no", "") else 1
+            else:
+                enc_flag = 1 if bool(encryption_used) else 0
+        except Exception:
+            enc_flag = 1
+
+        # normalize verification_status to integer (1 = verified/success, 0 = not)
+        verified = 1 if str(verification_status).lower() in ("1", "true", "verified", "ok", "success") else 0
+
+        details_json = None
+        if details is not None:
+            try:
+                details_json = json.dumps(details, ensure_ascii=False)
+            except Exception:
+                details_json = str(details)
+
+        # if caller provided explicit file_path, use it; else store details JSON in file_path column
+        store_path = file_path if file_path else details_json
+
+        sql = (
+            "INSERT INTO import_export_history"
+            " (operation_type, format, encryption_used, entry_count, file_size, file_path, checksum, verified)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        params = (operation_type, format, enc_flag, entry_count, file_size, store_path, checksum, verified)
+        with self.transaction() as conn:
+            cur = conn.cursor()
+            cur.execute(sql, params)
+            # do not return id to keep API simple; caller can query if needed
         
 __all__ = ["DatabasePool"]
