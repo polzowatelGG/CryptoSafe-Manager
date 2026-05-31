@@ -14,8 +14,12 @@ class StateManager:
         self._clipboard_timer = None
     
     def lock(self):
-        if self.key_manager:           
-            self.session_locked = True
+        self.session_locked = True
+        if self.key_manager:
+            try:
+                self.key_manager.lock()
+            except Exception:
+                pass
         if self._event_bus:
             self._event_bus.publish("VaultLocked", reason="manual")
 
