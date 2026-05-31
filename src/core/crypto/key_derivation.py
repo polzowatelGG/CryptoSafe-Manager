@@ -25,15 +25,19 @@ class KeyDerivation: # класс для управления производн
         self.pbkdf2_key_len = config.get('pbkdf2_key_len', 32)
 
     def _validate_config(self, config): # метод для проверки конфигурации на соответствие минимальным требованиям безопасности. он проверяет, что параметры argon2 и PBKDF2 не ниже рекомендуемых значений, чтобы обеспечить достаточную защиту от атак перебором паролей.
+        MAX_ARGON2_MEMORY = 1024 * 1024  # 1 ГБ максимум (в KiB для argon2-cffi)
+        MAX_ARGON2_TIME = 100
         if config.get('argon2_memory', 65536) < 65536:
-            raise ValueError("Argon2 memory too low")
-
+            raise ValueError("Argon2 memory too low (minimum 64 MiB)")
+        if config.get('argon2_memory', 65536) > MAX_ARGON2_MEMORY:
+            raise ValueError(f"Argon2 memory too high (maximum {MAX_ARGON2_MEMORY} KiB) — DoS protection")
         if config.get('argon2_time', 3) < 3:
-            raise ValueError("Argon2 time cost too low")
-
+            raise ValueError("Argon2 time cost too low (minimum 3)")
+        if config.get('argon2_time', 3) > MAX_ARGON2_TIME:
+            raise ValueError(f"Argon2 time cost too high (maximum {MAX_ARGON2_TIME}) — DoS protection")
         if config.get('pbkdf2_iterations', 100000) < 100000:
-            raise ValueError("PBKDF2 iterations too low")
-
+            raise ValueError("PBKDF2 iterations too low (minimum 100000)")
+        
     @staticmethod
     def generate_salt(length: int = 16) -> bytes: # метод для генерации случайной соли. он возвращает соль заданной длины, которая используется для хэширования паролей.
         if length != 16:

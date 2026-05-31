@@ -91,7 +91,7 @@ class KeyManager: # класс для управления ключами шиф
             with entry_manager.db.connection() as conn:
                 # переупакуем все записи
                 entry_manager.reencrypt_all(old_key, new_key, conn=conn)
-
+                
                 # записываем обновлённые параметры ключа
                 self.storage.save_auth_hash_on_conn(conn, new_hash)
                 self.storage.save_pbkdf2_params_on_conn(conn, new_salt, self.derivation.pbkdf2_iterations)

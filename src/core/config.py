@@ -75,6 +75,17 @@ class ConfigManager: # класс ConfigManager, который отвечает
             self.config["preferences"] = {}
         self.config["preferences"][key] = value
         self.save()
+        
+    def get(self, key: str, default=None):
+        # FIXединый метод get() для совместимости 
+        # Проверяем preferences, затем top-level ключи
+        pref = self.config.get("preferences", {}).get(key)
+        if pref is not None:
+            return pref
+        val = self.config.get(key)
+        if val is not None:
+            return val
+        return default
 
     def generate_key(self, password: str) -> bytes:  # генерация ключа на основе пароля и соли с сохранением соли
         enc = self.config.setdefault("encryption", {})

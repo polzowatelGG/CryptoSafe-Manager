@@ -14,6 +14,7 @@ from core.vault.password_generator import PasswordGenerator
 from gui.widgets.audit_log_viewer import AuditLogViewer
 from gui.widgets.secure_table import SecureTable
 from gui.settings_dialog import SettingsDialog
+from gui.qr_viewer_dialog import QRViewerDialog
 from core import events
 import json
 
@@ -153,10 +154,143 @@ class MainWindow(QMainWindow):
         verify_action = QAction("Проверить целостность логов", self)
         verify_action.triggered.connect(self._on_verify_integrity)
         view_menu.addAction(verify_action)
-
+        
+    # ================================================================== #
+    # меню Импорт/Экспорт
+    # ================================================================== #
+ 
+    def _on_export(self):
+        # Открывает диалог экспорта хранилища
+        if not self._check_unlocked():
+            return
+        if not self.exporter:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Сервис экспорта не инициализирован.\n"
+                "Убедитесь что приложение запущено корректно."
+            )
+            return
+ 
+        from gui.export_dialog import ExportDialog
+        dlg = ExportDialog(
+            exporter=self.exporter,
+            entry_manager=self.entry_manager,
+            parent=self,
+        )
+        dlg.exec()
+ 
+    def _on_import(self):
+        # """Открывает диалог импорта записей 
+        if not self._check_unlocked():
+            return
+        if not self.importer:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Сервис импорта не инициализирован."
+            )
+            return
+ 
+        from gui.import_dialog import ImportDialog
+        dlg = ImportDialog(importer=self.importer, parent=self)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            # Обновляем таблицу после импорта
+            self._load_entries()
+ 
+    def _on_share_entry(self):
+        # Открывает диалог шаринга для выбранной записи 
+        if not self._check_unlocked():
+            return
+        if not self.sharing_service:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Сервис шаринга не инициализирован."
+            )
+            return
+ 
+        # Получаем выбранную запись из таблицы
+        entry_id    = self.table.get_selected_entry_id()
+        entry_title = ""
+ 
+        if entry_id:
+            # Ищем название в локальном списке таблицы
+            for e in self.table.entries:
+                if e.get("id") == entry_id:
+                    entry_title = e.get("title", "")
+                    break
+        else:
+            QMessageBox.information(
+                self, "Подсказка",
+                "Выберите запись в таблице для шаринга,\n"
+                "или откройте диалог без выбора для управления историей."
+            )
+ 
+        from gui.sharing_dialog import SharingDialog
+        dlg = SharingDialog(
+            sharing_service=self.sharing_service,
+            entry_id=entry_id,
+            entry_title=entry_title,
+            parent=self,
+        )
+        dlg.exec()
+ 
+    def _on_show_qr(self):
+        # Открывает QR viewer 
+        if not self.qr_service:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Сервис QR-кодов не инициализирован."
+            )
+            return
+ 
+        if not self.qr_service.is_qr_available():
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Библиотека qrcode не установлена.\n\n"
+                "Выполните: pip install qrcode[pil]"
+            )
+            return
+ 
+        dlg = QRViewerDialog(
+            qr_service=self.qr_service,
+            qr_results=[],
+            parent=self,
+        )
+        dlg.exec()
+ 
+    def _on_share_entry_with_qr(self, share_result: dict):
+        # Показывает QR-код для готового пакета шаринга.
+        # Вызывается из SharingDialog после создания пакета.
+        if not self.qr_service or not self.qr_service.is_qr_available():
+            return
+ 
+        try:
+            qr_results = self.qr_service.generate_share_qr(
+                share_package=share_result["package"]
+            )
+            from gui.qr_viewer_dialog import QRViewerDialog
+            dlg = QRViewerDialog(
+                qr_service=self.qr_service,
+                qr_results=qr_results,
+                parent=self,
+            )
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "Ошибка QR", str(e))
+ 
     # ------------------------
     # Безопасность и мониторинг буфера обмена
     # ------------------------
+     
+    def _check_unlocked(self) -> bool:
+        # проверка что хранилище разблокировано перед операцией
+        if self.key_manager and not self.key_manager.is_unlocked():
+            QMessageBox.warning(
+                self, "Хранилище заблокировано",
+                "Разблокируйте хранилище перед выполнением этой операции."
+            )
+            return False
+        return True
+    
     def _on_unblock_clipboard(self):
         if self.clipboard_service:
             self.clipboard_service.unblock_copies()

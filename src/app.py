@@ -4,7 +4,6 @@
 import sys
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
-
 from core.config import ConfigManager
 from database.db import DatabasePool
 from core.crypto.key_storage import KeyStorage
@@ -22,6 +21,10 @@ from core.clipboard.clipboard_monitor import ClipboardMonitor
 from core.audit.log_verifier import LogVerifier
 from core.audit.log_signer import LogSigner
 from core.audit.audit_logger import AuditLogger
+from core.import_export.exporter import VaultExporter
+from core.import_export.importer import VaultImporter
+from core.import_export.sharing_service import SharingService
+from core.import_export.key_exchange import QRCodeService
 
 
 def main():
@@ -78,7 +81,7 @@ def main():
             "pbkdf2_iterations":  100000,
         })
 
-        state_manager = StateManager(config, event_bus= event_bus)
+        state_manager = StateManager(config, key_manager=key_manager, event_bus=event_bus)
         authenticator = Authenticator(key_manager, event_bus, state_manager)
 
         login_dialog = LoginDialog(authenticator)
@@ -177,6 +180,29 @@ def main():
         except Exception:
             pass
 
+    exporter = VaultExporter(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
+        audit_logger=audit_logger,
+    )
+ 
+    importer = VaultImporter(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
+        audit_logger=audit_logger,
+    )
+ 
+    sharing_service = SharingService(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
+        audit_logger=audit_logger,
+    )
+ 
+    qr_service = QRCodeService(ttl_seconds=300)
+
     # публикуем AppStartup после верификации
     event_bus.publish("AppStartup")
 
@@ -188,6 +214,10 @@ def main():
         state_manager=state_manager,
         clipboard_service=clipboard_service,
         log_verifier=log_verifier,
+        exporter=exporter,
+        importer=importer,
+        sharing_service=sharing_service,
+        qr_service=qr_service,
     )
 
     # подписываем toast-уведомления через Observer 
