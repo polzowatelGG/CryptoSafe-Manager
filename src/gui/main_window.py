@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (
     QFileDialog, QMainWindow, QStatusBar, QMessageBox, QDialog, QVBoxLayout,
     QFormLayout, QLineEdit, QTextEdit, QDialogButtonBox,
     QTableWidgetItem, QPushButton, QHBoxLayout, QLabel, QWidget,
-    QSystemTrayIcon, QMenu, QInputDialog, 
+    QSystemTrayIcon, QMenu, QInputDialog,
 )
 from PyQt6.QtGui import QAction, QFont, QIcon
 from PyQt6.QtCore import QEvent, QUrl, Qt, QTimer, QThread, pyqtSignal as Signal
@@ -41,16 +41,21 @@ class PasswordStrengthIndicator(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self, entry_manager=None, key_manager=None, authenticator=None,
                 state_manager=None, clipboard_service=None,
-                log_verifier=None, parent=None):
+                log_verifier=None, exporter=None, importer=None,
+                sharing_service=None, qr_service=None, parent=None):
         super().__init__(parent)
         self.entry_manager = entry_manager
         self.key_manager = key_manager
         self.authenticator = authenticator
         self.state_manager = state_manager
         self.clipboard_service = clipboard_service
-        self.log_verifier = log_verifier  # теперь из аргумента
+        self.log_verifier = log_verifier
+        self.exporter = exporter
+        self.importer = importer
+        self.sharing_service = sharing_service
+        self.qr_service = qr_service
         self.installEventFilter(self)
-        self._create_tray_icon()  # создаём иконку трея 
+        self._create_tray_icon()
 
         self.setWindowTitle("Secure Vault")
         self.resize(900, 600)
@@ -58,24 +63,21 @@ class MainWindow(QMainWindow):
         self._create_menu()
         self._create_central_table()
         self._create_status_bar()
-        self._start_clipboard_timer()  # запускаем живой таймер статус-бара
-        events.subscribe("UserLoggedIn",  self._on_user_logged_in)   
+        self._start_clipboard_timer()
+        events.subscribe("UserLoggedIn",  self._on_user_logged_in)
         events.subscribe("UserLoggedOut", self._on_vault_locked)
         events.subscribe("VaultLocked",   self._on_vault_locked)
         events.subscribe("ClipboardUnblocked", self._on_clipboard_unblocked)
-        
+
         if self.clipboard_service:
             self.clipboard_service.subscribe(self._on_clipboard_notification)
 
         if self.log_verifier:
             self.log_verifier.start_periodic_verification(
-            interval_hours=24,
-            on_result=self._on_verification_result
+                interval_hours=24,
+                on_result=self._on_verification_result
             )
 
-    # ------------------------
-    # Вспомогательные методы
-    # ------------------------
     @staticmethod
     def sanitize_text(text: str, max_len: int = 500) -> str:
         if not isinstance(text, str):
@@ -83,27 +85,26 @@ class MainWindow(QMainWindow):
         cleaned = re.sub(r'[\x00-\x1f\x7f]', '', text)
         return cleaned[:max_len]
 
-    # ------------------------
-    # Меню
-    # ------------------------
     def _create_menu(self):
         menu_bar = self.menuBar()
 
-        # Файл
         file_menu = menu_bar.addMenu("Файл")
         new_action = QAction("Создать", self)
-        new_action.triggered.connect(self._on_new_vault)  
+        new_action.triggered.connect(self._on_new_vault)
         open_action = QAction("Открыть", self)
-        open_action.triggered.connect(self._on_open_vault)  
+        open_action.triggered.connect(self._on_open_vault)
+        import_action = QAction("Импорт", self)
+        import_action.triggered.connect(self._on_import)
         backup_action = QAction("Резервная копия", self)
-        backup_action.triggered.connect(self._on_backup_vault)  
+        backup_action.triggered.connect(self._on_backup_vault)
+        export_vault_action = QAction("Экспорт паролей", self)
+        export_vault_action.triggered.connect(self._on_export)
         exit_action = QAction("Выход", self)
         exit_action.triggered.connect(self.close)
-        file_menu.addActions([new_action, open_action, backup_action])
+        file_menu.addActions([new_action, open_action, import_action, backup_action, export_vault_action])
         file_menu.addSeparator()
         file_menu.addAction(exit_action)
 
-        # Правка
         edit_menu = menu_bar.addMenu("Правка")
         self.add_action = QAction("Добавить", self)
         self.add_action.triggered.connect(self._on_add_entry)
@@ -113,7 +114,6 @@ class MainWindow(QMainWindow):
         self.delete_action.triggered.connect(self._on_delete_entry)
         edit_menu.addActions([self.add_action, self.edit_action, self.delete_action])
 
-        # Вид
         view_menu = menu_bar.addMenu("Вид")
         logs_action = QAction("Логи", self)
         logs_action.triggered.connect(self._show_audit_log)
@@ -128,13 +128,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.toggle_pass_action)
         self.toggle_pass_action.setShortcut("Ctrl+Shift+P")
 
-        # Справка
         help_menu = menu_bar.addMenu("Справка")
         about_action = QAction("О программе", self)
         about_action.triggered.connect(self._show_about)
         help_menu.addAction(about_action)
-        
-        # Разблокировка буфера обмена при подозрительной активности 
+
         security_menu = menu_bar.addMenu("Безопасность")
 
         change_pw_action = QAction("Сменить мастер-пароль", self)
@@ -143,24 +141,28 @@ class MainWindow(QMainWindow):
 
         self.unblock_clipboard_action = QAction("Разблокировать буфер обмена", self)
         self.unblock_clipboard_action.triggered.connect(self._on_unblock_clipboard)
-        self.unblock_clipboard_action.setVisible(False)  # скрыт пока не заблокирован
+        self.unblock_clipboard_action.setVisible(False)
         security_menu.addAction(self.unblock_clipboard_action)
-        
+
         preview_action = QAction("Предпросмотр буфера обмена", self)
         preview_action.triggered.connect(self._on_clipboard_preview)
         security_menu.addAction(preview_action)
-        
-        # Проверка целостности логов
+
         verify_action = QAction("Проверить целостность логов", self)
         verify_action.triggered.connect(self._on_verify_integrity)
         view_menu.addAction(verify_action)
         
-    # ================================================================== #
-    # меню Импорт/Экспорт
-    # ================================================================== #
- 
+        share_menu = menu_bar.addMenu("Обмен")
+
+        share_entry_action = QAction("📤 Поделиться записью...", self)
+        share_entry_action.triggered.connect(self._on_share_entry)
+        share_menu.addAction(share_entry_action)
+
+        qr_action = QAction("📷 QR-коды...", self)
+        qr_action.triggered.connect(self._on_show_qr)
+        share_menu.addAction(qr_action)
+
     def _on_export(self):
-        # Открывает диалог экспорта хранилища
         if not self._check_unlocked():
             return
         if not self.exporter:
@@ -170,7 +172,7 @@ class MainWindow(QMainWindow):
                 "Убедитесь что приложение запущено корректно."
             )
             return
- 
+
         from gui.export_dialog import ExportDialog
         dlg = ExportDialog(
             exporter=self.exporter,
@@ -178,9 +180,8 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
- 
+
     def _on_import(self):
-        # """Открывает диалог импорта записей 
         if not self._check_unlocked():
             return
         if not self.importer:
@@ -189,15 +190,13 @@ class MainWindow(QMainWindow):
                 "Сервис импорта не инициализирован."
             )
             return
- 
+
         from gui.import_dialog import ImportDialog
         dlg = ImportDialog(importer=self.importer, parent=self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            # Обновляем таблицу после импорта
             self._load_entries()
- 
+
     def _on_share_entry(self):
-        # Открывает диалог шаринга для выбранной записи 
         if not self._check_unlocked():
             return
         if not self.sharing_service:
@@ -206,13 +205,11 @@ class MainWindow(QMainWindow):
                 "Сервис шаринга не инициализирован."
             )
             return
- 
-        # Получаем выбранную запись из таблицы
-        entry_id    = self.table.get_selected_entry_id()
+
+        entry_id = self.table.get_selected_entry_id()
         entry_title = ""
- 
+
         if entry_id:
-            # Ищем название в локальном списке таблицы
             for e in self.table.entries:
                 if e.get("id") == entry_id:
                     entry_title = e.get("title", "")
@@ -223,7 +220,7 @@ class MainWindow(QMainWindow):
                 "Выберите запись в таблице для шаринга,\n"
                 "или откройте диалог без выбора для управления историей."
             )
- 
+
         from gui.sharing_dialog import SharingDialog
         dlg = SharingDialog(
             sharing_service=self.sharing_service,
@@ -232,16 +229,15 @@ class MainWindow(QMainWindow):
             parent=self,
         )
         dlg.exec()
- 
+
     def _on_show_qr(self):
-        # Открывает QR viewer 
+        """Открывает диалог выбора типа QR-кода."""
         if not self.qr_service:
             QMessageBox.warning(
-                self, "Недоступно",
-                "Сервис QR-кодов не инициализирован."
+                self, "Недоступно", "Сервис QR-кодов не инициализирован."
             )
             return
- 
+    
         if not self.qr_service.is_qr_available():
             QMessageBox.warning(
                 self, "Недоступно",
@@ -249,20 +245,374 @@ class MainWindow(QMainWindow):
                 "Выполните: pip install qrcode[pil]"
             )
             return
+    
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QPushButton, QLabel
+    
+        dlg = QDialog(self)
+        dlg.setWindowTitle("QR-коды")
+        dlg.setFixedWidth(340)
+        layout = QVBoxLayout(dlg)
+    
+        hint = QLabel(
+            "Выберите тип QR-кода:\n\n"
+            "• Мой публичный ключ — поделитесь им с тем,\n"
+            "  кто хочет отправить вам зашифрованный пакет.\n\n"
+            "• QR пакета шаринга — сначала создайте шаринг\n"
+            "  через Файл → Поделиться записью."
+        )
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: #555; font-size: 12px;")
+        layout.addWidget(hint)
+        layout.addSpacing(8)
+    
+        pubkey_btn = QPushButton("🔑 Мой публичный ключ")
+        pubkey_btn.clicked.connect(lambda: (dlg.accept(), self._on_show_qr_public_key()))
+        layout.addWidget(pubkey_btn)
+    
+        share_btn = QPushButton("📤 QR пакета шаринга")
+        share_btn.clicked.connect(lambda: (dlg.accept(), self._on_show_qr_share()))
+        layout.addWidget(share_btn)
+    
+        scan_btn = QPushButton("🔍 Сканировать QR")
+        scan_btn.clicked.connect(lambda: (dlg.accept(), self._on_scan_qr()))
+        layout.addWidget(scan_btn)
+    
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.clicked.connect(dlg.reject)
+        layout.addWidget(cancel_btn)
+    
+        dlg.exec()
+        
+    def _on_show_qr_public_key(self):
+        """Генерирует QR с публичным ключом пользователя."""
+        if not self.qr_service or not self.sharing_service:
+            QMessageBox.warning(
+                self, "Недоступно",
+                "Сервис шаринга не инициализирован."
+            )
+            return
+
+        try:
+            # Получаем публичный ключ из sharing_service
+            public_key_pem = self.sharing_service.get_or_create_public_key()
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"Не удалось получить публичный ключ:\n{e}"
+            )
+            return
+
+        try:
+            qr_results = self.qr_service.generate_public_key_qr(
+                public_key_pem=public_key_pem,
+                as_svg=True,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка генерации QR", str(e))
+            return
+
+        from gui.qr_viewer_dialog import QRViewerDialog
+        dlg = QRViewerDialog(
+            qr_service=self.qr_service,
+            qr_results=qr_results,
+            parent=self,
+        )
+        dlg.setWindowTitle("QR — Мой публичный ключ")
+        dlg.exec()
+        
+    def _on_show_qr_share(self):
+        """
+        Открывает список активных шарингов и генерирует QR для выбранного.
+        Если нет активных шарингов — предлагает создать.
+        """
+        if not self.sharing_service or not self.qr_service:
+            QMessageBox.warning(self, "Недоступно", "Сервис шаринга не инициализирован.")
+            return
+    
+        try:
+            shares = self.sharing_service.get_active_shares()
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", str(e))
+            return
+    
+        if not shares:
+            QMessageBox.information(
+                self, "Нет шарингов",
+                "У вас нет активных пакетов шаринга.\n\n"
+                "Создайте шаринг через: выберите запись → "
+                "Файл → Поделиться записью."
+            )
+            return
+    
+        # Диалог выбора шаринга
+        from PyQt6.QtWidgets import (
+            QDialog, QVBoxLayout, QListWidget,
+            QListWidgetItem, QPushButton, QHBoxLayout, QLabel
+        )
+        from datetime import datetime
+    
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Выберите пакет шаринга")
+        dlg.resize(460, 300)
+        layout = QVBoxLayout(dlg)
+    
+        layout.addWidget(QLabel("Выберите пакет для генерации QR-кода:"))
+    
+        lst = QListWidget()
+        now = datetime.utcnow()
+        for share in shares:
+            expires_str = share.get("expires_at", "")
+            is_expired = False
+            if expires_str:
+                try:
+                    expires_dt = datetime.fromisoformat(
+                        expires_str.replace("Z", "")
+                    )
+                    is_expired = now > expires_dt
+                except Exception:
+                    pass
+    
+            if is_expired:
+                continue  # не показываем истёкшие
+    
+            label = (
+                f"{share.get('share_id', '')[:12]}...  "
+                f"→ {share.get('recipient_info', '—')}  "
+                f"[до {expires_str[:10] if expires_str else '?'}]"
+            )
+            item = QListWidgetItem(label)
+            item.setData(Qt.ItemDataRole.UserRole, share)
+            lst.addItem(item)
+    
+        if lst.count() == 0:
+            QMessageBox.information(
+                self, "Нет активных шарингов",
+                "Все шаринги истекли. Создайте новый."
+            )
+            return
+    
+        layout.addWidget(lst)
+    
+        btn_layout = QHBoxLayout()
+        ok_btn = QPushButton("📷 Создать QR")
+        ok_btn.setEnabled(False)
+        cancel_btn = QPushButton("Отмена")
+        lst.itemSelectionChanged.connect(
+            lambda: ok_btn.setEnabled(bool(lst.selectedItems()))
+        )
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(ok_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+    
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+    
+        selected = lst.selectedItems()
+        if not selected:
+            return
+    
+        share_data = selected[0].data(Qt.ItemDataRole.UserRole)
+    
+        # Загружаем полный пакет шаринга из файла или из service
+        try:
+            # Пробуем получить пакет через service
+            package = self.sharing_service.get_share_package(
+                share_data["share_id"]
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"Не удалось загрузить пакет шаринга:\n{e}\n\n"
+                "Попробуйте экспортировать пакет вручную через диалог Шаринга."
+            )
+            return
+    
+        try:
+            from core.import_export.key_exchange import (
+                PAYLOAD_TYPE_SHARE_LINK,
+                PAYLOAD_TYPE_SHARE_PACKAGE,
+            )
  
+            if package.get("type") == "share_link":
+                # Полный зашифрованный пакет не хранится в БД —
+                # генерируем QR с метаданными (share_id + метод + срок)
+                qr_results = self.qr_service.generate_qr_codes(
+                    payload_type=PAYLOAD_TYPE_SHARE_LINK,
+                    data=package,
+                    as_svg=True,
+                )
+                info_message = (
+                    "QR создан. Он содержит метаданные шаринга (Share ID).\n\n"
+                    "📌 Как передать пакет получателю:\n"
+                    "1. Поделитесь этим QR — получатель узнает Share ID\n"
+                    "2. Передайте файл пакета через: Обмен → Поделиться "
+                    "записью → сохранить как файл\n\n"
+                    f"Share ID: {package.get('share_id', '')[:16]}..."
+                )
+                QMessageBox.information(self, "QR метаданных шаринга", info_message)
+            else:
+                # Полный зашифрованный пакет — обычный QR шаринга
+                qr_results = self.qr_service.generate_share_qr(
+                    share_package=package,
+                    as_svg=True,
+                )
+ 
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка генерации QR", str(e))
+            return
+ 
+        from gui.qr_viewer_dialog import QRViewerDialog
+        viewer = QRViewerDialog(
+            qr_service=self.qr_service,
+            qr_results=qr_results,
+            parent=self,
+        )
+        viewer.setWindowTitle(
+            "QR — Метаданные шаринга"
+            if package.get("type") == "share_link"
+            else "QR — Пакет шаринга"
+        )
+        viewer.exec()
+ 
+    
+    def _on_scan_qr(self):
+        """Открывает QRViewerDialog сразу на вкладке Сканировать."""
+        if not self.qr_service:
+            QMessageBox.warning(self, "Недоступно", "Сервис QR не инициализирован.")
+            return
+    
+        from gui.qr_viewer_dialog import QRViewerDialog
         dlg = QRViewerDialog(
             qr_service=self.qr_service,
             qr_results=[],
             parent=self,
         )
-        dlg.exec()
- 
+        dlg.setWindowTitle("Сканировать QR-код")
+        # Переключаемся на вкладку сканирования
+        dlg.tabs.setCurrentIndex(1)
+        result = dlg.exec()
+    
+        # Если пользователь отсканировал payload и нажал "Использовать"
+        payload = dlg.get_scanned_payload()
+        if payload:
+            self._handle_scanned_qr_payload(payload)
+    
+    def _handle_scanned_qr_payload(self, payload: dict):
+        """
+        Обрабатывает payload из отсканированного QR.
+    
+        Типы:
+        public_key    — сохраняет публичный ключ как новый контакт
+        share_package — открывает диалог получения зашифрованного пакета
+        share_link    — пока не поддерживается (информационное сообщение)
+        """
+        payload_type = payload.get("payload_type", "unknown")
+        data         = payload.get("data", {})
+    
+        if payload_type == "public_key":
+            # Сохраняем публичный ключ контакта
+            self._save_scanned_public_key(data)
+    
+        elif payload_type == "share_package":
+            # Открываем диалог получения пакета
+            if self.sharing_service:
+                from gui.sharing_dialog import SharingDialog
+                dlg = SharingDialog(
+                    sharing_service=self.sharing_service,
+                    entry_id=None,
+                    parent=self,
+                )
+                # Переходим на вкладку "Получить" и подставляем пакет
+                dlg.tabs.setCurrentIndex(2)
+                dlg._scanned_package = data
+                dlg.exec()
+            else:
+                QMessageBox.warning(
+                    self, "Недоступно",
+                    "Сервис шаринга не инициализирован."
+                )
+    
+        elif payload_type == "share_link":
+            QMessageBox.information(
+                self, "Share Link",
+                "Получен share_link QR.\n\n"
+                f"Share ID: {data.get('share_id', '—')}\n"
+                "Функция получения по ссылке будет доступна в следующей версии."
+            )
+    
+        else:
+            QMessageBox.information(
+                self, "QR отсканирован",
+                f"Тип payload: {payload_type}\n"
+                f"Данные: {str(data)[:200]}"
+            )
+    def _save_scanned_public_key(self, data: dict):
+        """Сохраняет отсканированный публичный ключ как контакт."""
+        import base64
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QFormLayout, QLineEdit, QPushButton, QHBoxLayout
+    
+        pem_b64 = data.get("public_key_pem")
+        if not pem_b64:
+            QMessageBox.warning(self, "Ошибка", "QR не содержит публичного ключа.")
+            return
+    
+        try:
+            pem_bytes = base64.b64decode(pem_b64)
+        except Exception:
+            QMessageBox.warning(self, "Ошибка", "Некорректные данные публичного ключа.")
+            return
+    
+        # Запрашиваем имя контакта
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Сохранить контакт")
+        dlg.setFixedWidth(300)
+        layout = QVBoxLayout(dlg)
+        form = QFormLayout()
+        name_input = QLineEdit()
+        name_input.setPlaceholderText("Имя контакта")
+        form.addRow("Имя:", name_input)
+        layout.addLayout(form)
+    
+        btn_layout = QHBoxLayout()
+        save_btn   = QPushButton("Сохранить")
+        cancel_btn = QPushButton("Отмена")
+        save_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_layout.addStretch()
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
+    
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+    
+        name = name_input.text().strip() or "Контакт"
+    
+        try:
+            self.sharing_service.add_contact(
+                name=name,
+                public_key_pem=pem_bytes,
+            )
+            QMessageBox.information(
+                self, "Сохранено",
+                f"Публичный ключ контакта «{name}» сохранён.\n"
+                "Теперь вы можете шифровать пакеты шаринга для него."
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка сохранения", str(e))
+    
+    
+
+    
+
+
     def _on_share_entry_with_qr(self, share_result: dict):
-        # Показывает QR-код для готового пакета шаринга.
-        # Вызывается из SharingDialog после создания пакета.
         if not self.qr_service or not self.qr_service.is_qr_available():
             return
- 
+
         try:
             qr_results = self.qr_service.generate_share_qr(
                 share_package=share_result["package"]
@@ -276,13 +626,8 @@ class MainWindow(QMainWindow):
             dlg.exec()
         except Exception as e:
             QMessageBox.warning(self, "Ошибка QR", str(e))
- 
-    # ------------------------
-    # Безопасность и мониторинг буфера обмена
-    # ------------------------
-     
+
     def _check_unlocked(self) -> bool:
-        # проверка что хранилище разблокировано перед операцией
         if self.key_manager and not self.key_manager.is_unlocked():
             QMessageBox.warning(
                 self, "Хранилище заблокировано",
@@ -290,11 +635,10 @@ class MainWindow(QMainWindow):
             )
             return False
         return True
-    
+
     def _on_unblock_clipboard(self):
         if self.clipboard_service:
             self.clipboard_service.unblock_copies()
-            # скрываем пункт меню после разблокировки
             self.unblock_clipboard_action.setVisible(False)
 
     def _on_clipboard_preview(self):
@@ -312,7 +656,6 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
 
-        # тип данных и источник
         data_type = status.get('data_type', '—')
         source_id = status.get('source_entry_id', 'неизвестно')
         remaining = int(status.get('remaining_seconds', 0))
@@ -325,7 +668,6 @@ class MainWindow(QMainWindow):
         form.addRow("Источник:", QLabel(str(source_id) if source_id else "неизвестно"))
         form.addRow("Очистка через:", QLabel(f"{remaining} сек" if status.get('active') else "—"))
 
-        # маскированное содержимое
         masks = {"password": "pas••••••••", "username": "usr••••••••", "notes": "note•••••••"}
         masked = masks.get(data_type, "•••••••••••")
         content_label = QLabel(masked if status.get('active') else "—")
@@ -337,7 +679,6 @@ class MainWindow(QMainWindow):
 
         btn_layout = QHBoxLayout()
 
-        # кнопка раскрытия с проверкой мастер-пароля
         reveal_btn = QPushButton("👁 Показать")
 
         def on_reveal():
@@ -362,7 +703,6 @@ class MainWindow(QMainWindow):
         reveal_btn.clicked.connect(on_reveal)
         reveal_btn.setEnabled(status.get('active', False))
 
-        # кнопка ручной очистки
         clear_btn = QPushButton("🗑 Очистить")
         clear_btn.setStyleSheet("color: red;")
 
@@ -385,68 +725,44 @@ class MainWindow(QMainWindow):
 
         dialog.exec()
 
-
-    # -------------------------
-    # Обработка уведомлений от ClipboardService 
-    # -------------------------
     def _on_clipboard_notification(self, message: str):
-    # показываем toast
         self.show_toast(message)
-        # если копирование заблокировано — показываем пункт разблокировки
         if self.clipboard_service and self.clipboard_service.is_blocked():
             self.unblock_clipboard_action.setVisible(True)
-            
-    #
-    #
-    #
+
     def _on_clipboard_unblocked(self, data=None):
-        #обработчик события разблокировки буфера обмена
-        # окрываем пункт меню разблокировки
         self.unblock_clipboard_action.setVisible(False)
-        
-        # рбновляем статус в статус-баре (показываем уведомление)
         self.show_toast("Буфер обмена разблокирован", duration=2000)
-        
-        # обновляем подсветку в таблице (снимаем подсветку)
         if hasattr(self, 'table') and self.table:
             self.table.highlight_clipboard_entry(None)
-            
+
     def show_toast(self, message: str, duration: int = 3000):
-        #показать временное сообщение в статус-баре
         if hasattr(self, 'status_bar'):
             original = self.status_bar.currentMessage()
             self.status_bar.showMessage(message)
             QTimer.singleShot(duration, lambda: self.status_bar.showMessage(original))
 
-    # ------------------------
-    # Центральная таблица с поиском
-    # ------------------------
     def _create_central_table(self):
-        # Передаём clipboard_service в таблицу для кнопок копирования (UI-1)
         self.table = SecureTable(clipboard_service=self.clipboard_service)
         self.secure_table = self.table
-        
+
         self._load_entries()
 
         self.table.entry_edit_requested.connect(self._on_edit_entry_by_id)
         self.table.entry_delete_requested.connect(self._on_delete_entry_by_id)
 
-        # Строка поиска
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск (например, title:работа или просто текст)")
         self.search_input.textChanged.connect(self._on_search)
 
-        # Компоновка
         container = QWidget()
         layout = QVBoxLayout()
         layout.addWidget(self.search_input)
         layout.addWidget(self.table)
         container.setLayout(layout)
         self.setCentralWidget(container)
-    
+
     def _load_entries(self):
-    # загружаем записи из entry_manager и сразу затираем
-    # расшифрованный список после передачи в таблицу (SEC-1)
         if not self.entry_manager:
             return
 
@@ -464,8 +780,6 @@ class MainWindow(QMainWindow):
                     password=entry.get("password", ""),
                 )
         finally:
-            # затираем расшифрованные данные из памяти после передачи в GUI
-            # finally гарантирует очистку даже при исключении
             self.entry_manager.secure_wipe_list(entries)
 
     def _on_user_logged_in(self, **kwargs):
@@ -473,45 +787,42 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
 
     def _on_vault_locked(self, **kwargs):
-        # при блокировке хранилища очищаем все расшифрованные данные из таблицы
         self.table.clear_entries()
-        self.login_status = "Не выполнен вход"   
+        self.login_status = "Не выполнен вход"
         self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
 
     def _on_search(self, text):
         self.table.filter_entries(text)
-        
-        
+
     def _create_tray_icon(self):
-        # создаём иконку системного трея (UI-2)
-        self._tray = QSystemTrayIcon(self)
+        self._tray = None
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            return
 
-        # используем стандартную иконку если своей нет
-        self._tray.setIcon(self.style().standardIcon(
-            self.style().StandardPixmap.SP_ComputerIcon
-        ))
-        self._tray.setToolTip("CryptoSafe Manager")
+        try:
+            self._tray = QSystemTrayIcon(self)
+            self._tray.setIcon(self.style().standardIcon(
+                self.style().StandardPixmap.SP_ComputerIcon
+            ))
+            self._tray.setToolTip("CryptoSafe Manager")
 
-        # контекстное меню трея
-        tray_menu = QMenu()
+            tray_menu = QMenu()
 
-        show_action = QAction("Открыть", self)
-        show_action.triggered.connect(self.show)
-        tray_menu.addAction(show_action)
+            show_action = QAction("Открыть", self)
+            show_action.triggered.connect(self.show)
+            tray_menu.addAction(show_action)
 
-        tray_menu.addSeparator()
+            tray_menu.addSeparator()
 
-        quit_action = QAction("Выход", self)
-        quit_action.triggered.connect(self.close)
-        tray_menu.addAction(quit_action)
+            quit_action = QAction("Выход", self)
+            quit_action.triggered.connect(self.close)
+            tray_menu.addAction(quit_action)
 
-        self._tray.setContextMenu(tray_menu)
-        self._tray.show()
+            self._tray.setContextMenu(tray_menu)
+            self._tray.show()
+        except Exception:
+            self._tray = None
 
-
-    # ------------------------
-    # Статус-бар
-    # ------------------------
     def _create_status_bar(self):
         self.status_bar = QStatusBar()
         self.login_status = "Не выполнен вход"
@@ -541,15 +852,12 @@ class MainWindow(QMainWindow):
             else:
                 self.clipboard_status = "Буфер: ---"
 
-            # обновляем tooltip трея с тем же статусом 
             if hasattr(self, '_tray'):
                 self._tray.setToolTip(
                     f"CryptoSafe Manager\n📋 {data_type} — очистка через {remaining}с"
                 )
         else:
             self.clipboard_status = "Буфер: ---"
-
-            # сбрасываем tooltip трея
             if hasattr(self, '_tray'):
                 self._tray.setToolTip("CryptoSafe Manager")
 
@@ -557,22 +865,16 @@ class MainWindow(QMainWindow):
             f"{self.login_status} | {self.clipboard_status}"
         )
 
-        # обновляем подсветку строки в таблице
         if self.clipboard_service:
             source_id = status.get('source_entry_id')
             self.table.highlight_clipboard_entry(
                 source_id if status.get('active') else None
-            )        
-        
-    # Показать/скрыть пароли
-    # ------------------------
+            )
+
     def _toggle_passwords(self, checked):
         self.table.update_password_visibility(checked)
         self.toggle_pass_action.setText("Скрыть пароли" if checked else "Показать пароли")
 
-    # ------------------------
-    # Добавление записи
-    # ------------------------
     def _on_add_entry(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Добавить запись")
@@ -660,7 +962,7 @@ class MainWindow(QMainWindow):
                 _msg_weak_add.exec()
                 if _msg_weak_add.clickedButton() != _yes_weak_add:
                     return
-                
+
             if self.entry_manager:
                 try:
                     entry_id = self.entry_manager.create_entry({
@@ -670,17 +972,14 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                         QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить: {e}")
                         return
-            else:   
+            else:
                 entry_id = str(uuid.uuid4())
-                
+
             self.table.add_entry(entry_id, title, username, url,
-                                datetime.now().strftime("%Y-%m-%d %H:%M"), 
+                                datetime.now().strftime("%Y-%m-%d %H:%M"),
                                 password, notes)
             QMessageBox.information(self, "Успех", "Запись добавлена")
 
-    # ------------------------
-    # Редактирование
-    # ------------------------
     def _on_edit_entry(self):
         entry_id = self.table.get_selected_entry_id()
         if not entry_id:
@@ -774,7 +1073,7 @@ class MainWindow(QMainWindow):
                 _msg_weak_edit.exec()
                 if _msg_weak_edit.clickedButton() != _yes_weak_edit:
                     return
-            
+
             if self.entry_manager:
                 try:
                     self.entry_manager.update_entry(entry_id, {
@@ -785,27 +1084,28 @@ class MainWindow(QMainWindow):
                 except Exception as e:
                     QMessageBox.critical(self, "Ошибка", f"Не удалось обновить: {e}")
                     return
- 
-            # обновляем локальный dict
+
             entry.update({
                 "title": new_title, "username": new_username,
                 "password": new_password, "url": new_url,
                 "notes": notes_edit.toPlainText(),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             })
-            row = self.table.entries.index(entry)
-            self.table.setItem(row, 0, QTableWidgetItem(entry["title"]))
-            self.table.setItem(row, 1, QTableWidgetItem(self.table._mask_login(entry["username"])))
-            self.table.setItem(row, 2, QTableWidgetItem(self.table._get_domain(entry["url"])))
-            self.table.setItem(row, 3, QTableWidgetItem(entry["updated_at"]))
-            pw_text = entry["password"] if self.table.show_passwords else "••••••••"
-            self.table.setItem(row, 4, QTableWidgetItem(pw_text))
+            row = self.table.find_row_by_entry_id(entry_id)
+            if row < 0:
+                row = self.table.entries.index(entry) if entry in self.table.entries else -1
+            if row >= 0:
+                title_item = QTableWidgetItem(entry["title"])
+                title_item.setData(Qt.ItemDataRole.UserRole, entry_id)
+                self.table.setItem(row, 0, title_item)
+                self.table.setItem(row, 1, QTableWidgetItem(self.table._mask_login(entry["username"])))
+                self.table.setItem(row, 2, QTableWidgetItem(self.table._get_domain(entry["url"])))
+                self.table.setItem(row, 3, QTableWidgetItem(entry["updated_at"]))
+                pw_text = entry["password"] if self.table.show_passwords else "••••••••"
+                self.table.setItem(row, 4, QTableWidgetItem(pw_text))
 
             QMessageBox.information(self, "Успех", "Запись обновлена")
 
-    # ------------------------
-    # Удаление
-    # ------------------------
     def _on_delete_entry(self):
         entry_id = self.table.get_selected_entry_id()
         if not entry_id:
@@ -829,17 +1129,10 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 QMessageBox.critical(self, "Ошибка", f"Не удалось удалить: {e}")
                 return
- 
-        for i, e in enumerate(self.table.entries):
-            if e["id"] == entry_id:
-                self.table.removeRow(i)
-                self.table.entries.pop(i)
-                break
+
+        self.table.remove_entry_by_id(entry_id)
         QMessageBox.information(self, "Удаление", "Запись удалена")
 
-    # ------------------------
-    # Смена мастер-пароля
-    # ------------------------
     def _on_change_password(self):
         if not self.key_manager or not self.entry_manager:
             QMessageBox.warning(self, "Ошибка", "Функция недоступна")
@@ -849,9 +1142,6 @@ class MainWindow(QMainWindow):
         if dlg.exec() == QDialog.DialogCode.Accepted:
             QMessageBox.information(self, "Успех", "Пароль изменён. При следующем входе используйте новый пароль.")
 
-    # ------------------------
-    # События (авто-блокировка)
-    # ------------------------
     def eventFilter(self, obj, event):
         if event.type() in (QEvent.Type.MouseButtonPress, QEvent.Type.KeyPress):
             if self.state_manager:
@@ -861,19 +1151,13 @@ class MainWindow(QMainWindow):
     def changeEvent(self, event):
         if event.type() == QEvent.Type.WindowStateChange:
             if self.isMinimized() or not self.isActiveWindow():
-                if self.authenticator:
-                    self.authenticator.logout()
+                if self.state_manager:
+                    self.state_manager.reset_inactivity_timer()
         super().changeEvent(event)
 
-    # ------------------------
-    # О программе
-    # ------------------------
     def _show_about(self):
         QMessageBox.information(self, "О программе", "Secure Vault\nВерсия 0.4\nУчебный проект")
 
-    # ------------------------
-    # Резервная копия 
-    # ------------------------
     def _on_new_vault(self):
         msg = QMessageBox(self)
         msg.setWindowTitle("Создать хранилище")
@@ -885,7 +1169,22 @@ class MainWindow(QMainWindow):
         if msg.clickedButton() == yes_btn:
             from gui.setup_wizard import SetupWizard
             wizard = SetupWizard()
-            wizard.exec()
+            if wizard.exec() == QDialog.DialogCode.Accepted:
+                new_db_path = getattr(wizard, 'db_path', None)
+                config = getattr(self, '_config', None)
+                if new_db_path and config:
+                    try:
+                        config.set_database_path(new_db_path)
+                        config.save()
+                    except Exception:
+                        pass
+                QMessageBox.information(
+                    self,
+                    "Новый файл хранилища",
+                    "Новый файл хранилища выбран. Приложение будет закрыто. Запустите его снова для работы с новым хранилищем."
+                )
+                from PyQt6.QtWidgets import QApplication
+                QApplication.instance().quit()
 
     def _on_open_vault(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -923,42 +1222,29 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Не удалось создать резервную копию:\n{e}")
 
-    # ------------------------
-    # Логи и настройки
-    # ------------------------
     def _show_audit_log(self):
         dialog = QDialog(self)
         dialog.setWindowTitle("Журнал аудита")
         layout = QVBoxLayout()
-        # получаем pool из entry_manager для передачи в AuditLogViewer
-        # без pool виджет откроется пустым без реальных данных
         pool = getattr(self.entry_manager, 'db', None) if self.entry_manager else None
         layout.addWidget(AuditLogViewer(db=pool))
         dialog.setLayout(layout)
-        dialog.resize(900, 600)  # увеличиваем — виджет теперь полноценный
+        dialog.resize(900, 600)
         dialog.exec()
 
     def _show_settings(self):
-        # Передаём config чтобы SettingsDialog мог читать и сохранять настройки
         config = getattr(self, '_config', None)
-        pool = getattr(self, '_settings_model', None)
-        
+        pool = getattr(self.entry_manager, 'db', None) if self.entry_manager else getattr(self, '_settings_model', None)
+
         dialog = SettingsDialog(config=config, pool=pool)
         dialog.exec()
-    
-    # ------------------------
-    # Верификация логов
-    # ------------------------
+
     def _on_verification_result(self, result: dict):
-    # вызывается из фонового потока через колбэк 
-    # обновляем статус целостности в статус-баре
-    # используем QTimer.singleShot чтобы обновить GUI из главного потока
         def _update():
             if result.get('verified'):
                 integrity_status = "✅ Лог: целостность подтверждена"
             else:
                 integrity_status = "⚠️ Лог: обнаружено нарушение целостности!"
-                # показываем предупреждение при нарушении 
                 QMessageBox.critical(
                     self,
                     "Нарушение целостности аудит-лога",
@@ -970,70 +1256,42 @@ class MainWindow(QMainWindow):
                     f"Рекомендуется сохранить резервную копию и обратиться "
                     f"к администратору."
                 )
+                if self.key_manager and not self.key_manager.is_locked():
+                    self.key_manager.lock()
+                    if self.state_manager:
+                        self.state_manager.lock()
+                    QMessageBox.warning(self, "Безопасность", "Хранилище заблокировано из-за нарушения целостности логов.")
 
             self.status_bar.showMessage(
                 f"{self.login_status} | {self.clipboard_status} | {integrity_status}"
             )
 
         QTimer.singleShot(0, _update)
-        
+
     def closeEvent(self, event):
-        #корректное завершение — останавливаем все компоненты
         if self.log_verifier:
             self.log_verifier.stop_periodic_verification()
         if hasattr(self, '_status_timer'):
             self._status_timer.stop()
-        if hasattr(self, '_tray'):
+        if hasattr(self, '_tray') and self._tray:
             self._tray.hide()
+
+        try:
+            # Останавливаем фоновую проверку при закрытии.
+            if self.log_verifier:
+                self.log_verifier.stop_periodic_verification()
+        except Exception:
+            pass
+
         super().closeEvent(event)
-        from PyQt6.QtWidgets import QApplication
-        QApplication.instance().quit()
 
-        # показываем индикатор прогресса пока идёт проверка
-        from PyQt6.QtWidgets import QProgressDialog
-        progress = QProgressDialog(
-            "Проверка целостности журнала аудита...", None, 0, 0, self
-        )
-        progress.setWindowTitle("Верификация логов")
-        progress.setWindowModality(Qt.WindowModality.WindowModal)
-        progress.setMinimumDuration(0)
-        progress.show()
-
-        # запускаем полную верификацию в фоновом потоке
-        # чтобы GUI не замерзал на большом логе
-
-        class _VerifyThread(QThread):
-            done = Signal(dict)
-
-            def __init__(self, verifier):
-                super().__init__()
-                self.verifier = verifier
-
-            def run(self):
-                try:
-                    result = self.verifier.verify_integrity(start_seq=0)
-                    self.done.emit(result)
-                except Exception as e:
-                    self.done.emit({'verified': False, 'error': str(e)})
-
-        self._verify_thread = _VerifyThread(self.log_verifier)
-
-        def _on_done(result: dict):
-            progress.close()
-            self._show_verification_report(result)
-
-        self._verify_thread.done.connect(_on_done)
-        self._verify_thread.start()
-    
     def _show_verification_report(self, result: dict):
-        # VER-3: отображаем детальный отчёт верификации
         dialog = QDialog(self)
         dialog.setWindowTitle("Отчёт верификации журнала аудита")
         dialog.resize(520, 400)
 
         layout = QVBoxLayout(dialog)
 
-        # статус верификации
         verified = result.get('verified', False)
         status_label = QLabel(
             "✅ Целостность подтверждена" if verified
@@ -1045,7 +1303,6 @@ class MainWindow(QMainWindow):
         )
         layout.addWidget(status_label)
 
-        # детали верификации
         form = QFormLayout()
         form.addRow(
             "Всего проверено:",
@@ -1065,7 +1322,6 @@ class MainWindow(QMainWindow):
         )
         layout.addLayout(form)
 
-        # детальный список проблем если есть
         invalid = result.get('invalid_entries', [])
         breaks = result.get('chain_breaks', [])
 
@@ -1089,13 +1345,11 @@ class MainWindow(QMainWindow):
             layout.addWidget(QLabel("Подробности:"))
             layout.addWidget(details)
 
-        # кнопки — экспорт отчёта и закрытие
         btn_layout = QHBoxLayout()
 
         export_btn = QPushButton("💾 Экспортировать отчёт")
 
         def _export():
-
             path, _ = QFileDialog.getSaveFileName(
                 dialog, "Сохранить отчёт", "verification_report.json",
                 "JSON (*.json)"
@@ -1125,9 +1379,8 @@ class MainWindow(QMainWindow):
         layout.addLayout(btn_layout)
 
         dialog.exec()
-    
+
     def _on_verify_integrity(self):
-        # ручная полная верификация аудит-лога
         if not self.log_verifier:
             QMessageBox.information(
                 self, "Недоступно",
@@ -1135,7 +1388,6 @@ class MainWindow(QMainWindow):
             )
             return
 
-        # показываем индикатор прогресса пока идёт проверка
         from PyQt6.QtWidgets import QProgressDialog
         progress = QProgressDialog(
             "Проверка целостности журнала аудита...", None, 0, 0, self
@@ -1145,8 +1397,6 @@ class MainWindow(QMainWindow):
         progress.setMinimumDuration(0)
         progress.show()
 
-        # запускаем полную верификацию в фоновом потоке
-        # чтобы GUI не замерзал на большом логе
         from PyQt6.QtCore import QThread, pyqtSignal as Signal
 
         class _VerifyThread(QThread):
