@@ -5,6 +5,7 @@ import gzip
 import hmac
 import json
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
@@ -12,6 +13,22 @@ from .crypto import checksum, decrypt_aes_gcm, decrypt_with_private_key, derive_
 from .exceptions import ImportValidationError
 from .formats import BitwardenJSONFormat, CSVVaultFormat, LastPassCSVFormat, NativeJSONFormat
 from .models import ImportOptions
+
+
+@dataclass
+class ImportResult:
+    total_parsed: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    imported: int = 0
+    mode: str = "dry-run"
+    errors: List[str] = field(default_factory=list)
+    dry_run_entries: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def _normalize_mode(mode: str) -> str:
+    return str(mode or "dry-run").replace("_", "-").strip().lower()
 
 
 def _detect_format(path: str) -> str:
@@ -71,7 +88,7 @@ class VaultImporter:
             fmt = _detect_format(filepath)
         opts = ImportOptions(
             format=fmt,
-            mode=mode,
+            mode=_normalize_mode(mode),
             duplicate_strategy=duplicate_strategy,
             max_file_size=max_file_size,
             timeout_seconds=timeout_seconds,
@@ -110,9 +127,19 @@ class VaultImporter:
         start = time.monotonic()
         opts = options or ImportOptions(format="encrypted_json", mode="dry-run")
         entries = self.preview_encrypted_json(package_payload, password, opts)
-        result = {"validated": len(entries), "created": 0, "updated": 0, "skipped": 0, "mode": opts.mode}
+        result = ImportResult(
+            total_parsed=len(entries),
+            created=0,
+            updated=0,
+            skipped=0,
+            imported=0,
+            mode=opts.mode,
+            dry_run_entries=entries if opts.mode == "dry-run" else [],
+        )
         if opts.mode == "dry-run":
-            self._record_history("import", "encrypted_json", "AES-GCM", len(entries), len(self._as_bytes(package_payload)), "dry-run", "validated", result)
+            self._record_history(
+                "import", "encrypted_json", "AES-GCM", len(entries),
+                len(self._as_bytes(package_payload)), "dry-run", "validated", result.__dict__)
             return result
 
         if opts.mode == "replace":
@@ -125,16 +152,19 @@ class VaultImporter:
             ident = self._identity(entry)
             existing_entry = existing.get(ident)
             if existing_entry and opts.duplicate_strategy == "skip":
-                result["skipped"] += 1
+                result.skipped += 1
                 continue
             if existing_entry and opts.duplicate_strategy == "replace":
                 self.entry_manager.update_entry(existing_entry["id"], entry)
-                result["updated"] += 1
+                result.updated += 1
                 continue
             self.entry_manager.create_entry(entry)
-            result["created"] += 1
+            result.created += 1
 
-        self._record_history("import", "encrypted_json", "AES-GCM", len(entries), len(self._as_bytes(package_payload)), "applied", "verified", result)
+        result.imported = result.created
+        self._record_history(
+            "import", "encrypted_json", "AES-GCM", len(entries),
+            len(self._as_bytes(package_payload)), "applied", "verified", result.__dict__)
         return result
 
     def preview_plaintext(self, payload: str | bytes, options: ImportOptions | None = None) -> List[Dict[str, Any]]:
@@ -149,7 +179,7 @@ class VaultImporter:
         result = self._apply_entries(entries, opts, start)
         self._record_history(
             "import", opts.format, "none", len(entries), len(self._as_bytes(payload)),
-            checksum(self._as_bytes(payload)), "validated" if opts.mode == "dry-run" else "verified", result
+            checksum(self._as_bytes(payload)), "validated" if opts.mode == "dry-run" else "verified", result.__dict__ if isinstance(result, ImportResult) else result
         )
         return result
 
@@ -260,8 +290,16 @@ class VaultImporter:
     def _identity(self, entry: Dict[str, Any]) -> tuple:
         return (entry.get("title", "").strip().lower(), entry.get("username", "").strip().lower())
 
-    def _apply_entries(self, entries: List[Dict[str, Any]], opts: ImportOptions, start: float) -> Dict[str, Any]:
-        result = {"validated": len(entries), "created": 0, "updated": 0, "skipped": 0, "mode": opts.mode}
+    def _apply_entries(self, entries: List[Dict[str, Any]], opts: ImportOptions, start: float) -> ImportResult:
+        result = ImportResult(
+            total_parsed=len(entries),
+            created=0,
+            updated=0,
+            skipped=0,
+            imported=0,
+            mode=opts.mode,
+            dry_run_entries=entries if opts.mode == "dry-run" else [],
+        )
         if opts.mode == "dry-run":
             return result
         if opts.mode == "replace":
@@ -274,14 +312,15 @@ class VaultImporter:
             ident = self._identity(entry)
             exist = existing.get(ident)
             if exist and opts.duplicate_strategy == "skip":
-                result["skipped"] += 1
+                result.skipped += 1
             elif exist and opts.duplicate_strategy == "replace":
                 self.entry_manager.update_entry(exist["id"], entry)
-                result["updated"] += 1
+                result.updated += 1
             else:
                 created = self.entry_manager.create_entry(entry)
                 existing[ident] = created
-                result["created"] += 1
+                result.created += 1
+        result.imported = result.created
         return result
 
     def _clear_vault(self):
