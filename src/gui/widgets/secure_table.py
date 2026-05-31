@@ -1,3 +1,4 @@
+from datetime import datetime
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QMenu, QHeaderView, QMessageBox
@@ -15,6 +16,7 @@ class SecureTable(QTableWidget):
 
         self.entries = []
         self.show_passwords = False
+        self._search_in_progress = False 
 
         self.setColumnCount(5)
         self.setHorizontalHeaderLabels(["Название", "Логин", "URL", "Последнее изменение", "Пароль"])
@@ -29,44 +31,49 @@ class SecureTable(QTableWidget):
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._show_context_menu)
-        
+
+    def _safe_display_text(self, text: str) -> str:
+        if not text:
+            return ""
+        if text and text[0] in ('=', '+', '-', '@'):
+            return "'" + text
+        return text
+
+    @staticmethod
+    def _format_updated_at(updated_at: str) -> str:
+        if not updated_at:
+            return ""
+        try:
+            value = updated_at.strip()
+            if value.endswith("Z"):
+                value = value[:-1] + "+00:00"
+            parsed = datetime.fromisoformat(value)
+            return parsed.strftime("%Y-%m-%d %H:%M")
+        except Exception:
+            return updated_at
+
     @staticmethod
     def _fuzzy_match(query: str, text: str, threshold: float = 0.6) -> bool:
-        # точное вхождение подстроки — проверяем первым, это быстрее
         if query in text:
             return True
-
-        # нечёткое соответствие через SequenceMatcher —
-        # сравниваем запрос с каждым словом из текста отдельно,
-        # чтобы опечатка в одном слове не размывалась по всей строке.
-        # порог 0.6: "Gogle" → "Google" даёт ~0.67, проходит.
-        # "goo" → "Google" даёт 0.5, не проходит — слишком короткий фрагмент.
         for word in text.split():
             ratio = SequenceMatcher(None, query, word).ratio()
             if ratio >= threshold:
                 return True
-
         return False
-    
+
     def highlight_clipboard_entry(self, entry_id: Optional[str]):
-        # подсвечиваем строку запись которой сейчас в буфере обмена (UI-2)
-        # снимаем подсветку со всех строк и подсвечиваем нужную
         for row in range(self.rowCount()):
             is_highlighted = (
                 entry_id is not None and
-                row < len(self.entries) and
-                self.entries[row].get("id") == entry_id
+                self._get_entry_id_for_row(row) == entry_id
             )
-
-            # голубой фон для строки в буфере, стандартный для остальных
             color = QColor(173, 216, 230) if is_highlighted else QColor(255, 255, 255, 0)
             brush = QBrush(color)
-
             for col in range(self.columnCount()):
                 item = self.item(row, col)
                 if item:
                     item.setBackground(brush)
-
 
     def _mask_login(self, login: str) -> str:
         if len(login) <= 4:
@@ -83,6 +90,10 @@ class SecureTable(QTableWidget):
         except Exception:
             return url
 
+    def _get_entry_id_for_row(self, row: int) -> Optional[str]:
+        item = self.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
     def add_entry(
         self,
         entry_id: str,
@@ -91,24 +102,30 @@ class SecureTable(QTableWidget):
         url: str,
         updated_at: str,
         password: str,
-        notes: str = "",          
+        notes: str = "",
     ):
         row = self.rowCount()
         self.insertRow(row)
+        safe_title = self._safe_display_text(title)
+        safe_username = self._safe_display_text(username)
+        safe_domain = self._safe_display_text(self._get_domain(url))
+
         self.entries.append({
-            "id":         entry_id,
-            "title":      title,
-            "username":   username,
-            "url":        url,
+            "id": entry_id,
+            "title": title,
+            "username": username,
+            "url": url,
             "updated_at": updated_at,
-            "password":   password,
-            "notes":      notes,      
+            "password": password,
+            "notes": notes,
         })
 
-        self.setItem(row, 0, QTableWidgetItem(title))
-        self.setItem(row, 1, QTableWidgetItem(self._mask_login(username)))
-        self.setItem(row, 2, QTableWidgetItem(self._get_domain(url)))
-        self.setItem(row, 3, QTableWidgetItem(updated_at))
+        title_item = QTableWidgetItem(safe_title)
+        title_item.setData(Qt.ItemDataRole.UserRole, entry_id)
+        self.setItem(row, 0, title_item)
+        self.setItem(row, 1, QTableWidgetItem(self._mask_login(safe_username)))
+        self.setItem(row, 2, QTableWidgetItem(safe_domain))
+        self.setItem(row, 3, QTableWidgetItem(self._format_updated_at(updated_at)))
 
         pw_text = password if self.show_passwords else "••••••••"
         self.setItem(row, 4, QTableWidgetItem(pw_text))
@@ -118,9 +135,9 @@ class SecureTable(QTableWidget):
     def update_password_visibility(self, show: bool):
         self.show_passwords = show
         for row in range(self.rowCount()):
-            if row >= len(self.entries):
-                break
-            password = self.entries[row]["password"]
+            entry_id = self._get_entry_id_for_row(row)
+            entry = self._get_entry(entry_id) if entry_id else None
+            password = entry["password"] if entry else ""
             pw_text = password if show else "••••••••"
             self.setItem(row, 4, QTableWidgetItem(pw_text))
 
@@ -130,11 +147,13 @@ class SecureTable(QTableWidget):
             return
 
         row = item.row()
-        entry_id = self.entries[row]["id"]
+        title_item = self.item(row, 0)
+        entry_id = title_item.data(Qt.ItemDataRole.UserRole) if title_item else None
+        if not entry_id:
+            return
 
         menu = QMenu(self)
 
-        # Редактирование / удаление
         edit_action = QAction("Изменить", self)
         delete_action = QAction("Удалить", self)
         edit_action.triggered.connect(lambda: self.entry_edit_requested.emit(entry_id))
@@ -151,14 +170,10 @@ class SecureTable(QTableWidget):
         copy_user_action = QAction("📋 Копировать логин", self)
         copy_user_action.triggered.connect(lambda: self._copy_username(entry_id))
         menu.addAction(copy_user_action)
-        
+
         copy_url_action = QAction("📋 Копировать URL", self)
         copy_url_action.triggered.connect(lambda: self._copy_url(entry_id))
         menu.addAction(copy_url_action)
-
-        copy_all_action = QAction("📋 Копировать всё (пароль)", self)
-        copy_all_action.triggered.connect(lambda: self._copy_password(entry_id))
-        menu.addAction(copy_all_action)
 
         menu.addSeparator()
 
@@ -178,14 +193,14 @@ class SecureTable(QTableWidget):
         entry = self._get_entry(entry_id)
         if not entry:
             return
-        
+
         if entry.get("never_copy_to_clipboard", False):
             QMessageBox.warning(
-            self, "Запрещено",
-            "Для этой записи запрещено копирование пароля в буфер обмена."
+                self, "Запрещено",
+                "Для этой записи запрещено копирование пароля в буфер обмена."
             )
             return
-        
+
         password = entry.get("password", "")
         if not password:
             QMessageBox.information(self, "Информация", "Пароль не задан")
@@ -264,6 +279,10 @@ class SecureTable(QTableWidget):
         msg.exec()
 
     def clear_entries(self):
+        # FIX: SEC-1 Sprint 3 - Clear memory when clearing table
+        for entry in self.entries:
+            for key in entry.keys():
+                entry[key] = None
         self.entries.clear()
         self.setRowCount(0)
 
@@ -272,17 +291,38 @@ class SecureTable(QTableWidget):
         if not selected:
             return None
         row = selected[0].row()
-        if row < len(self.entries):
-            return self.entries[row]["id"]
-        return None
+        title_item = self.item(row, 0)
+        return title_item.data(Qt.ItemDataRole.UserRole) if title_item else None
+
+    def find_row_by_entry_id(self, entry_id: str) -> int:
+        for row in range(self.rowCount()):
+            title_item = self.item(row, 0)
+            if title_item and title_item.data(Qt.ItemDataRole.UserRole) == entry_id:
+                return row
+        return -1
+
+    def remove_entry_by_id(self, entry_id: str):
+        row = self.find_row_by_entry_id(entry_id)
+        if row >= 0:
+            self.removeRow(row)
+        self.entries = [e for e in self.entries if e.get("id") != entry_id]
 
     def filter_entries(self, search_text: str):
+        # FIX: Performance warning for large datasets (Sprint 3 PERF)
+        if len(self.entries) > 500 and not self._search_in_progress:
+            self._search_in_progress = True
+            QMessageBox.information(self, "Поиск", f"Выполняется поиск среди {len(self.entries)} записей...")
+            QTimer.singleShot(100, lambda: self._perform_filter(search_text))
+        else:
+            self._perform_filter(search_text)
+
+    def _perform_filter(self, search_text: str):
         if not search_text.strip():
             for row in range(self.rowCount()):
                 self.setRowHidden(row, False)
+            self._search_in_progress = False
             return
 
-        # разбираем запрос на field-фильтры (title:gogle) и свободный текст
         field_filters = {}
         any_words = []
 
@@ -294,17 +334,20 @@ class SecureTable(QTableWidget):
             else:
                 any_words.append(word.lower())
 
-        for row, entry in enumerate(self.entries):
-            visible = True
+        for row in range(self.rowCount()):
+            entry_id = self._get_entry_id_for_row(row)
+            entry = self._get_entry(entry_id) if entry_id else None
+            if not entry:
+                self.setRowHidden(row, True)
+                continue
 
-            # проверяем field-фильтры (title:gogle)
+            visible = True
             for field, val in field_filters.items():
                 field_value = entry.get(field, '').lower()
                 if not self._fuzzy_match(val, field_value):
                     visible = False
                     break
 
-            # проверяем свободный текст по всем полям
             if visible and any_words:
                 haystack = (
                     entry.get('title',    '') + ' ' +
@@ -315,3 +358,9 @@ class SecureTable(QTableWidget):
                 ).lower()
                 if not any(self._fuzzy_match(w, haystack) for w in any_words):
                     visible = False
+
+            self.setRowHidden(row, not visible)
+
+        self._search_in_progress = False
+        if self.rowCount() > 0 and not any(not self.isRowHidden(i) for i in range(self.rowCount())):
+            QMessageBox.information(self, "Поиск", "Ничего не найдено.")
