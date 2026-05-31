@@ -1,12 +1,10 @@
-# Виджет просмотра журнала аудита 
-# Таблица с сортировкой, фильтрацией, поиском, пагинацией и панелью деталей
 
 import json
 from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
+    QMenu, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
     QTableWidgetItem, QLabel, QLineEdit, QComboBox,
     QPushButton, QHeaderView, QSplitter, QTextEdit,
     QDateEdit, QFormLayout, QFrame, QMessageBox,
@@ -17,40 +15,32 @@ from PyQt6.QtGui import QColor, QBrush, QFont
 
 
 class AuditLogViewer(QWidget):
-    # сигнал: пользователь кликнул на запись vault-операции
-    # передаём entry_id для подсветки в SecureTable (GUI-4)
     vault_entry_selected = pyqtSignal(str)
+    integrity_breach_detected = pyqtSignal(dict)
 
-    PAGE_SIZE = 50  # записей на странице по умолчанию
+    PAGE_SIZE = 50
 
     def __init__(self, db=None, parent=None):
         super().__init__(parent)
         self.db = db
 
-        # состояние пагинации и фильтрации
         self._current_page = 0
         self._total_entries = 0
-        self._all_entries = []     # все записи после фильтрации
+        self._all_entries = []
         self._filtered_entries = []
 
         self._init_ui()
+        self._setup_export_menu()
 
-        # загружаем данные если БД передана
         if self.db:
             self._load_entries()
-
-    # ------------------------------------------------------------------ #
-    # Построение интерфейса
-    # ------------------------------------------------------------------ #
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # панель фильтров
         layout.addWidget(self._build_filter_panel())
 
-        # разделитель: таблица слева, детали справа (GUI-2)
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self.table = self._build_table()
@@ -62,7 +52,6 @@ class AuditLogViewer(QWidget):
         splitter.setSizes([680, 320])
         layout.addWidget(splitter)
 
-        # панель пагинации
         layout.addWidget(self._build_pagination_panel())
 
     def _build_filter_panel(self) -> QWidget:
@@ -71,7 +60,6 @@ class AuditLogViewer(QWidget):
         layout = QHBoxLayout(panel)
         layout.setContentsMargins(4, 4, 4, 4)
 
-        # полнотекстовый поиск
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Поиск по деталям...")
         self.search_input.setMinimumWidth(180)
@@ -79,7 +67,6 @@ class AuditLogViewer(QWidget):
         layout.addWidget(QLabel("Поиск:"))
         layout.addWidget(self.search_input)
 
-        # фильтр по типу события
         self.type_filter = QComboBox()
         self.type_filter.addItems([
             "Все типы",
@@ -93,7 +80,6 @@ class AuditLogViewer(QWidget):
         layout.addWidget(QLabel("Тип:"))
         layout.addWidget(self.type_filter)
 
-        # фильтр по severity
         self.severity_filter = QComboBox()
         self.severity_filter.addItems(
             ["Все", "INFO", "WARN", "ERROR", "CRITICAL"]
@@ -102,7 +88,6 @@ class AuditLogViewer(QWidget):
         layout.addWidget(QLabel("Severity:"))
         layout.addWidget(self.severity_filter)
 
-        # фильтр по дате от/до
         self.date_from = QDateEdit()
         self.date_from.setDate(QDate.currentDate().addDays(-30))
         self.date_from.setCalendarPopup(True)
@@ -118,17 +103,20 @@ class AuditLogViewer(QWidget):
         layout.addWidget(QLabel("До:"))
         layout.addWidget(self.date_to)
 
-        # кнопка сброса фильтров
         reset_btn = QPushButton("Сбросить")
         reset_btn.clicked.connect(self._reset_filters)
         layout.addWidget(reset_btn)
 
-        # кнопка обновления
         refresh_btn = QPushButton("🔄")
         refresh_btn.setToolTip("Обновить")
         refresh_btn.setFixedWidth(32)
         refresh_btn.clicked.connect(self._load_entries)
         layout.addWidget(refresh_btn)
+
+        self.export_btn = QPushButton("📁 Экспорт")
+        self.export_menu = QMenu(self)
+        self.export_btn.setMenu(self.export_menu)
+        layout.addWidget(self.export_btn)
 
         layout.addStretch()
         return panel
@@ -140,7 +128,6 @@ class AuditLogViewer(QWidget):
             "#", "Время", "Тип события", "Severity", "Источник", "Пользователь"
         ])
 
-        # колонка # — узкая, остальные — растягиваются
         table.horizontalHeader().setSectionResizeMode(
             0, QHeaderView.ResizeMode.ResizeToContents
         )
@@ -158,10 +145,8 @@ class AuditLogViewer(QWidget):
         table.setSortingEnabled(True)
         table.verticalHeader().setVisible(False)
 
-        # клик на строку — показываем детали 
         table.itemSelectionChanged.connect(self._on_row_selected)
 
-        # контекстное меню 
         table.setContextMenuPolicy(
             Qt.ContextMenuPolicy.CustomContextMenu
         )
@@ -179,18 +164,15 @@ class AuditLogViewer(QWidget):
 
         layout.addWidget(QLabel("Детали записи:"))
 
-        # JSON деталей в читаемом формате (GUI-2)
         self.details_text = QTextEdit()
         self.details_text.setReadOnly(True)
         self.details_text.setFont(QFont("Courier", 10))
         layout.addWidget(self.details_text)
 
-        # статус верификации подписи (GUI-2)
         self.sig_status_label = QLabel("Подпись: —")
         self.sig_status_label.setWordWrap(True)
         layout.addWidget(self.sig_status_label)
 
-        # hash chain (GUI-2)
         layout.addWidget(QLabel("Hash chain:"))
         self.hash_label = QLabel("—")
         self.hash_label.setFont(QFont("Courier", 9))
@@ -227,12 +209,7 @@ class AuditLogViewer(QWidget):
 
         return panel
 
-    # ------------------------------------------------------------------ #
-    # Загрузка и фильтрация данных
-    # ------------------------------------------------------------------ #
-
     def _load_entries(self):
-
         if not self.db:
             return
         self._all_entries = []
@@ -253,7 +230,6 @@ class AuditLogViewer(QWidget):
             self.details_text.setPlainText(f"Ошибка загрузки: {e}")
 
     def _apply_filters(self):
-        # применяем все активные фильтры к _all_entries
         search = self.search_input.text().lower().strip()
         type_f = self.type_filter.currentText()
         sev_f  = self.severity_filter.currentText()
@@ -267,15 +243,12 @@ class AuditLogViewer(QWidget):
             except Exception:
                 data = {}
 
-            # фильтр по типу события
             if type_f != "Все типы" and data.get('event_type') != type_f:
                 continue
 
-            # фильтр по severity
             if sev_f != "Все" and data.get('severity') != sev_f:
                 continue
 
-            # фильтр по дате
             ts_str = row.get('timestamp', '')
             if ts_str:
                 try:
@@ -287,7 +260,6 @@ class AuditLogViewer(QWidget):
                 except Exception:
                     pass
 
-            # полнотекстовый поиск по деталям
             if search:
                 details_str = json.dumps(
                     data.get('details', {}), ensure_ascii=False
@@ -310,12 +282,7 @@ class AuditLogViewer(QWidget):
         self.date_from.setDate(QDate.currentDate().addDays(-30))
         self.date_to.setDate(QDate.currentDate())
 
-    # ------------------------------------------------------------------ #
-    # Рендеринг страницы
-    # ------------------------------------------------------------------ #
-
     def _render_page(self):
-        # рендерим текущую страницу из _filtered_entries
         total = len(self._filtered_entries)
         total_pages = max(1, (total + self.PAGE_SIZE - 1) // self.PAGE_SIZE)
         start = self._current_page * self.PAGE_SIZE
@@ -325,7 +292,6 @@ class AuditLogViewer(QWidget):
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(page_entries))
 
-        # цвета severity
         sev_colors = {
             'INFO':     QColor(255, 255, 255, 0),
             'WARN':     QColor(255, 255, 200),
@@ -355,14 +321,12 @@ class AuditLogViewer(QWidget):
             for col, val in enumerate(values):
                 item = QTableWidgetItem(val)
                 item.setBackground(brush)
-                # сохраняем полную строку в UserRole для деталей
                 if col == 0:
                     item.setData(Qt.ItemDataRole.UserRole, row)
                 self.table.setItem(row_idx, col, item)
 
         self.table.setSortingEnabled(True)
 
-        # обновляем навигацию
         self.page_label.setText(
             f"Стр. {self._current_page + 1} из {total_pages}"
         )
@@ -371,10 +335,6 @@ class AuditLogViewer(QWidget):
             self._current_page < total_pages - 1
         )
         self.entries_label.setText(f"Записей: {total}")
-
-    # ------------------------------------------------------------------ #
-    # Пагинация
-    # ------------------------------------------------------------------ #
 
     def _prev_page(self):
         if self._current_page > 0:
@@ -389,10 +349,6 @@ class AuditLogViewer(QWidget):
         if self._current_page < total_pages - 1:
             self._current_page += 1
             self._render_page()
-
-    # ------------------------------------------------------------------ #
-    # Детали и верификация (GUI-2)
-    # ------------------------------------------------------------------ #
 
     def _on_row_selected(self):
         selected = self.table.selectedItems()
@@ -411,7 +367,6 @@ class AuditLogViewer(QWidget):
         self._show_entry_details(row)
 
     def _show_entry_details(self, row: dict):
-        # показываем JSON деталей в читаемом виде (GUI-2)
         try:
             data = json.loads(row.get('entry_data', '{}'))
             pretty = json.dumps(
@@ -422,7 +377,6 @@ class AuditLogViewer(QWidget):
 
         self.details_text.setPlainText(pretty)
 
-        # показываем hash chain (GUI-2)
         entry_hash = row.get('entry_hash', '—')
         prev_hash  = row.get('previous_hash', '—')
         self.hash_label.setText(
@@ -430,7 +384,6 @@ class AuditLogViewer(QWidget):
             f"this: {entry_hash[:16]}…"
         )
 
-        # показываем статус подписи (GUI-2)
         sig = row.get('signature', '')
         if sig:
             self.sig_status_label.setText("🔐 Подпись: присутствует")
@@ -438,10 +391,6 @@ class AuditLogViewer(QWidget):
         else:
             self.sig_status_label.setText("⚠️ Подпись: отсутствует")
             self.sig_status_label.setStyleSheet("color: red;")
-
-    # ------------------------------------------------------------------ #
-    # Контекстное меню 
-    # ------------------------------------------------------------------ #
 
     def _show_context_menu(self, pos):
         from PyQt6.QtWidgets import QMenu
@@ -467,7 +416,6 @@ class AuditLogViewer(QWidget):
         menu = QMenu(self)
         event_type = data.get('event_type', '')
 
-        # если vault-операция — предлагаем перейти к записи (GUI-4)
         if event_type in (
             'ENTRY_CREATED', 'ENTRY_UPDATED', 'ENTRY_DELETED'
         ):
@@ -481,7 +429,6 @@ class AuditLogViewer(QWidget):
                 )
                 menu.addAction(goto_action)
 
-        # показываем детали в панели
         detail_action = QAction("📋 Показать детали", self)
         detail_action.triggered.connect(
             lambda: self._show_entry_details(row)
@@ -490,58 +437,91 @@ class AuditLogViewer(QWidget):
 
         menu.exec(self.table.viewport().mapToGlobal(pos))
 
-    # ------------------------------------------------------------------ #
-    # Публичный API для внешнего обновления
-    # ------------------------------------------------------------------ #
-
     def refresh(self):
-        # вызывается из MainWindow после новых событий
         self._load_entries()
 
     def set_db(self, db):
-        # устанавливаем БД после инициализации (для случаев
-        # когда AuditLogViewer создаётся до подключения к БД)
         self.db = db
         self._load_entries()
-        
-    def _on_export(self, format_name: str):
 
-        # запрашиваем мастер-пароль перед экспортом 
-        password, ok = QInputDialog.getText(
-            self,
-            "Подтверждение экспорта",
-            "Введите мастер-пароль для подтверждения экспорта:",
-            QLineEdit.EchoMode.Password
-        )
-        if not ok or not password:
+    def _setup_export_menu(self):
+        self.export_menu.clear()
+        json_action = self.export_menu.addAction("Экспорт в JSON")
+        csv_action = self.export_menu.addAction("Экспорт в CSV")
+        pdf_action = self.export_menu.addAction("Экспорт в PDF")
+        json_action.triggered.connect(lambda: self._on_export("json"))
+        csv_action.triggered.connect(lambda: self._on_export("csv"))
+        pdf_action.triggered.connect(lambda: self._on_export("pdf"))
+
+    def _on_export(self, format_name: str):
+        if not self.db:
+            QMessageBox.warning(self, "Ошибка", "База данных недоступна")
             return
 
-        # запрашиваем путь к файлу
-        extensions = {
-            "json": "JSON (*.json)",
-            "csv":  "CSV (*.csv)",
-            "pdf":  "PDF (*.pdf)",
-        }
+        if not self._filtered_entries:
+            QMessageBox.information(self, "Экспорт", "Нет записей для экспорта.")
+            return
+
+        suffix = {
+            'json': 'json',
+            'csv': 'csv',
+            'pdf': 'json',
+        }.get(format_name, 'json')
+
         path, _ = QFileDialog.getSaveFileName(
             self,
-            f"Экспорт в {format_name.upper()}",
-            f"audit_log.{format_name}",
-            extensions.get(format_name, "*.*")
+            "Сохранить экспорт журнала аудита",
+            f"audit_log_export.{suffix}",
+            "JSON Files (*.json);;CSV Files (*.csv);;All Files (*)"
         )
         if not path:
             return
 
         try:
-            export_method = getattr(self.formatter, f"export_{format_name}")
-            count = export_method(path, password=password)
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(
-                self, "Готово",
-                f"Экспортировано {count} записей в {path}"
-            )
-        except PermissionError as e:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Отказано", str(e))
+            if format_name == 'csv':
+                import csv
+                with open(path, 'w', newline='', encoding='utf-8') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([
+                        'sequence_number', 'timestamp', 'event_type',
+                        'severity', 'source', 'user_id', 'details',
+                        'entry_hash', 'signature', 'previous_hash'
+                    ])
+                    for row in self._filtered_entries:
+                        try:
+                            data = json.loads(row.get('entry_data', '{}'))
+                        except Exception:
+                            data = {}
+                        details = json.dumps(data.get('details', {}), ensure_ascii=False)
+                        writer.writerow([
+                            row.get('sequence_number', ''),
+                            row.get('timestamp', ''),
+                            data.get('event_type', ''),
+                            data.get('severity', ''),
+                            data.get('source', ''),
+                            data.get('user_id', ''),
+                            details,
+                            row.get('entry_hash', ''),
+                            row.get('signature', ''),
+                            row.get('previous_hash', ''),
+                        ])
+            else:
+                export_data = {
+                    'exported_at': datetime.utcnow().isoformat() + 'Z',
+                    'format': format_name,
+                    'entries': self._filtered_entries,
+                }
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+            QMessageBox.information(self, "Готово", f"Экспорт журнала аудита сохранён:\n{path}")
         except Exception as e:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.critical(self, "Ошибка экспорта", str(e))
+            QMessageBox.critical(self, "Ошибка экспорта", f"Не удалось экспортировать журнал аудита:\n{e}")
+
+    def _safe_csv_value(self, val):
+        if val is None:
+            return ""
+        str_val = str(val)
+        if str_val and str_val[0] in ('=', '+', '-', '@'):
+            return "'" + str_val
+        return str_val
