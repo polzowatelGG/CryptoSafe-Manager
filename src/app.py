@@ -182,16 +182,14 @@ def main():
 
     exporter = VaultExporter(
         entry_manager=entry_manager,
-        key_manager=key_manager,
-        db=pool,
-        audit_logger=audit_logger,
+        database=pool,
+        event_bus=event_bus,
     )
  
     importer = VaultImporter(
         entry_manager=entry_manager,
-        key_manager=key_manager,
-        db=pool,
-        audit_logger=audit_logger,
+        database=pool,
+        event_bus=event_bus,
     )
  
     sharing_service = SharingService(
