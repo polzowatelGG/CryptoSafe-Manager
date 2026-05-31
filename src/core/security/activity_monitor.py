@@ -1,114 +1,86 @@
-# Мониторинг активности пользователя для авто-блокировки 
-# используем Qt-события: MainWindow уже вызывает state_manager.record_activity() в eventFilter при каждом MouseButtonPress
-# и KeyPress. ActivityMonitor получает уведомления через record_activity() и только следит за таймаутом в фоновом потоке.
+# src/core/security/activity_monitor.py
+# Кроссплатформенный монитор активности пользователя для авто-блокировки.
+# Работает без платформенных заглушек — использует только внутренний таймер.
+
 import time
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Optional
 
+
 class ActivityMonitor:
-    # Монитор активности пользователя.
-    # Получает уведомления об активности через record_activity() от Qt-eventFilter.
-    # Фоновый поток проверяет время простоя каждые check_interval секунд и вызывает lock_callback при превышении inactivity_timeout.
+    """Monitor user activity for auto-lock."""
 
     def __init__(self, lock_callback: Callable, config: dict):
         self.lock_callback = lock_callback
-        self.config        = dict(config)  # копируем, чтобы update_config был изолирован
+        self.config = dict(config)
+        self.last_activity = datetime.utcnow()
+        self.monitoring = False
+        self._monitor_thread: Optional[threading.Thread] = None
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
 
-        self.last_activity: datetime = datetime.utcnow()
-        self.monitoring: bool        = False
-        self._locked_out: bool       = False  # True = уже заблокировали в этом периоде
-
-        self._lock: threading.Lock               = threading.Lock()
-        self.monitor_thread: Optional[threading.Thread] = None
-
-    # Управление мониторингом
-    def start_monitoring(self) -> None:
-        # Запускает фоновый поток мониторинга.
-        # Идемпотентен — повторный вызов игнорируется.
+    def start_monitoring(self):
+        """Start activity monitoring in background thread."""
         with self._lock:
             if self.monitoring:
                 return
-            self.monitoring  = True
-            self._locked_out = False
-            self.last_activity = datetime.utcnow()
+            self.monitoring = True
+            self._stop_event.clear()
+            self._monitor_thread = threading.Thread(
+                target=self._monitor_loop,
+                daemon=True,
+                name="ActivityMonitor"
+            )
+            self._monitor_thread.start()
 
-        self.monitor_thread = threading.Thread(
-            target=self._monitor_loop,
-            name="ActivityMonitor",
-            daemon=True,  # завершается вместе с главным потоком
-        )
-        self.monitor_thread.start()
-
-    def stop_monitoring(self) -> None:
-        # Останавливает мониторинг.
-        # Блокируется до завершения фонового потока (max 2 сек).
+    def stop_monitoring(self):
+        """Stop activity monitoring."""
         with self._lock:
             self.monitoring = False
+            self._stop_event.set()
+        if self._monitor_thread and self._monitor_thread.is_alive():
+            self._monitor_thread.join(timeout=2.0)
 
-        if self.monitor_thread and self.monitor_thread.is_alive():
-            self.monitor_thread.join(timeout=2.0)
-
-    # Регистрация активности (вызывается из Qt)
-    def record_activity(self) -> None:
-        # Регистрирует активность пользователя — сбрасывает таймер.
+    def record_activity(self):
+        """Record user activity — resets idle timer."""
         with self._lock:
             self.last_activity = datetime.utcnow()
-            self._locked_out   = False  # активность — разрешаем следующую блокировку
 
-    # Запросы состояния
+    def update_config(self, new_config: dict):
+        """Update configuration at runtime (e.g. change inactivity_timeout)."""
+        with self._lock:
+            self.config.update(new_config)
+
     def get_idle_time(self) -> float:
-        # Возвращает текущее время простоя в секундах
+        """Get current idle time in seconds."""
         with self._lock:
             return (datetime.utcnow() - self.last_activity).total_seconds()
 
-    def get_timeout(self) -> int:
-        # Возвращает текущий таймаут из конфига
-        return int(self.config.get("inactivity_timeout", 300))
-
-    def get_remaining(self) -> float:
-        # Возвращает оставшееся время до блокировки в секундах (>= 0)
-        remaining = self.get_timeout() - self.get_idle_time()
-        return max(0.0, remaining)
-
-    def is_monitoring(self) -> bool:
-        # True если фоновый поток запущен
-        return self.monitoring
-
-    # Обновление конфигурации на лету
-    def update_config(self, new_config: dict) -> None:
-        # Обновляет конфигурацию без перезапуска потока.
-        # Используется при смене профиля безопасности.
-        self.config.update(new_config)
-
-    # Внутренний цикл мониторинга
-    def _monitor_loop(self) -> None:
-        # Фоновый цикл. Запускается в daemon-потоке.
-        # 1. Спим check_interval секунд
-        # 2. Считаем idle_time
-        # 3. Если idle >= timeout И ещё не блокировали → блокируем
-        # 4. Повторяем
-        # Потребление CPU при check_interval=1.0 сек: < 0.1%
-        while self.monitoring:
-            check_interval = float(self.config.get("check_interval", 1.0))
-            time.sleep(check_interval)
-
-            # Читаем состояние
+    def _monitor_loop(self):
+        """Main monitoring loop — checks idle time every check_interval seconds."""
+        while self.monitoring and not self._stop_event.is_set():
+            # Read check_interval and timeout under lock (supports runtime updates)
             with self._lock:
-                idle        = (datetime.utcnow() - self.last_activity).total_seconds()
-                timeout     = int(self.config.get("inactivity_timeout", 300))
-                locked_out  = self._locked_out
+                check_interval = self.config.get('check_interval', 1.0)
+                timeout_raw = self.config.get('inactivity_timeout', 300)
+                lock_timeout = float(timeout_raw)
+                idle = (datetime.utcnow() - self.last_activity).total_seconds()
 
-            if idle >= timeout and not locked_out:
-                # Устанавливаем флаг ДО вызова callback — защита от race condition
+            if lock_timeout > 0 and idle >= lock_timeout:
+                # Reset activity BEFORE callback to prevent re-triggering immediately
                 with self._lock:
-                    self._locked_out = True
-
+                    self.last_activity = datetime.utcnow()
                 try:
                     self.lock_callback()
-                except Exception as e:
-                    # Логируем но не падаем — мониторинг должен продолжаться
-                    import logging
-                    logging.getLogger(__name__).error(
-                        "ActivityMonitor: lock_callback failed: %s", e
-                    )
+                except Exception:
+                    pass
+
+            # Sleep in small increments so stop_event is checked promptly
+            elapsed = 0.0
+            step = min(0.05, check_interval)
+            while elapsed < check_interval:
+                if self._stop_event.is_set() or not self.monitoring:
+                    return
+                time.sleep(step)
+                elapsed += step
