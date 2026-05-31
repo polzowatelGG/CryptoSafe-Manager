@@ -1,5 +1,5 @@
-# Главный модуль приложения — точка входа, инициализация всех компонентов,
-# управление жизненным циклом и взаимодействие между частями системы.
+# Главный модуль приложения — точка входа, инициализация всех компонентов.
+# Sprint 7: добавлены ActivityMonitor и PanicMode.
 
 import sys
 from pathlib import Path
@@ -25,6 +25,9 @@ from core.import_export.exporter import VaultExporter
 from core.import_export.importer import VaultImporter
 from core.import_export.sharing_service import SharingService
 from core.import_export.key_exchange import QRCodeService
+# Sprint 7
+from core.security.activity_monitor import ActivityMonitor
+from core.security.panic_mode import PanicMode
 
 
 def main():
@@ -32,13 +35,9 @@ def main():
     config = ConfigManager()
     db_path = config.get_database_path()
 
-
-    # EventBus создаётся первым — все остальные компоненты его используют
     event_bus = EventBus()
 
-    # БД и миграции
     if not db_path or not Path(db_path).exists():
-        # первый запуск — запускаем мастер настройки
         wizard = SetupWizard()
         if wizard.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
@@ -62,14 +61,13 @@ def main():
         key_manager.initialize(password)
         key_manager.unlock(password)
 
-        state_manager = StateManager(config,event_bus=event_bus)
+        state_manager = StateManager(config, event_bus=event_bus)
         authenticator = Authenticator(key_manager, event_bus, state_manager)
         authenticator.failed_attempts = 0
         state_manager.unlock()
         event_bus.publish("UserLoggedIn")
 
     else:
-        # повторный запуск — показываем диалог входа
         pool = DatabasePool(db_path)
         pool.migrate()
 
@@ -88,123 +86,82 @@ def main():
         if login_dialog.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
 
-    # EntryManager
     entry_manager = EntryManager(pool, key_manager)
 
     # Clipboard
     clipboard_adapter = get_platform_clipboard_adapter()
-
     clipboard_service = ClipboardService(
         platform_adapter=clipboard_adapter,
         event_system=event_bus,
         config=config,
         state_manager=state_manager,
     )
-
     monitor = ClipboardMonitor(clipboard_service, clipboard_adapter)
     clipboard_service.set_monitor(monitor)
-    # запускаем монитор один раз (ранее вызывался дважды — баг исправлен)
-    monitor_available = monitor.start()
-    if not monitor_available:
-        # мониторинг недоступен — продолжаем без него
-        # пользователь уже получил уведомление через _show_notification()
-        pass
+    monitor.start()
 
-    # Audit — signer → audit_logger → log_verifier
-    # порядок важен: LogSigner требует разблокированный key_manager,
-    # AuditLogger требует signer, LogVerifier требует pool и signer
-    # исправлена опечатка: было singer, стало signer
-    # исправлен аргумент: LogSigner требует key_manager
+    # Audit
     signer = LogSigner(key_manager)
-
     audit_logger = AuditLogger(pool, signer, event_bus)
-
     log_verifier = LogVerifier(pool, signer)
 
-    # верификация целостности лога при старте
+    # Верификация при старте
     try:
         with pool.connection() as conn:
-            row = conn.execute(
-                "SELECT COUNT(*) as cnt FROM audit_log"
-            ).fetchone()
+            row = conn.execute("SELECT COUNT(*) as cnt FROM audit_log").fetchone()
         total_entries = row["cnt"] if row else 0
 
         if total_entries > 1000:
-            # большой лог — проверяем последние 1000 (выборка)
             startup_result = log_verifier._verify_last_n(n=1000)
             checked_label = f"последние 1000 из {total_entries}"
         else:
-            # маленький лог — проверяем все записи целиком
             startup_result = log_verifier.verify_log(start_seq=0)
             checked_label = f"все {total_entries}"
 
         if not startup_result['verified']:
-            # показываем предупреждение ДО открытия главного окна
             QMessageBox.critical(
-                None,
-                "⚠️ Нарушение целостности журнала аудита",
+                None, "⚠️ Нарушение целостности журнала аудита",
                 f"Обнаружены повреждённые записи при запуске!\n\n"
                 f"Проверено записей: {checked_label}\n"
-                f"Повреждённых подписей: "
-                f"{len(startup_result.get('invalid_entries', []))}\n"
-                f"Разрывов цепочки: "
-                f"{len(startup_result.get('chain_breaks', []))}\n\n"
-                f"Рекомендуется выполнить полную верификацию\n"
-                f"через меню Вид → Проверить целостность логов."
-            )
-            # логируем факт обнаружения tampering
+                f"Повреждённых подписей: {len(startup_result.get('invalid_entries', []))}\n"
+                f"Разрывов цепочки: {len(startup_result.get('chain_breaks', []))}")
             audit_logger.log_event(
-                event_type="AUDIT_INTEGRITY_FAILED",
-                severity="CRITICAL",
+                event_type="AUDIT_INTEGRITY_FAILED", severity="CRITICAL",
                 source="startup",
-                details={
-                    "invalid_entries": len(
-                        startup_result.get('invalid_entries', [])
-                    ),
-                    "chain_breaks": len(
-                        startup_result.get('chain_breaks', [])
-                    ),
-                    "checked": checked_label,
-                }
-            )
-
+                details={"invalid_entries": len(startup_result.get('invalid_entries', [])),
+                         "chain_breaks": len(startup_result.get('chain_breaks', [])),
+                         "checked": checked_label})
     except Exception as e:
-        # верификация упала — не блокируем запуск но логируем
         try:
             audit_logger.log_event(
-                event_type="AUDIT_STARTUP_VERIFY_ERROR",
-                severity="ERROR",
-                source="startup",
-                details={"error": str(e)[:200]}
-            )
+                event_type="AUDIT_STARTUP_VERIFY_ERROR", severity="ERROR",
+                source="startup", details={"error": str(e)[:200]})
         except Exception:
             pass
 
-    exporter = VaultExporter(
-        entry_manager=entry_manager,
-        database=pool,
-        event_bus=event_bus,
-    )
- 
-    importer = VaultImporter(
-        entry_manager=entry_manager,
-        database=pool,
-        event_bus=event_bus,
-    )
- 
-    sharing_service = SharingService(
-        entry_manager=entry_manager,
-        key_manager=key_manager,
-        db=pool,
-        audit_logger=audit_logger,
-    )
- 
+    # Import/Export/Sharing
+    exporter = VaultExporter(entry_manager=entry_manager, database=pool)
+    importer = VaultImporter(entry_manager=entry_manager, database=pool)
+    sharing_service = SharingService(entry_manager=entry_manager, key_manager=key_manager,
+                                      db=pool, audit_logger=audit_logger)
     qr_service = QRCodeService(ttl_seconds=300)
 
-    # публикуем AppStartup после верификации
+    # ── Sprint 7: ActivityMonitor ──────────────────────────────────────
+    inactivity_timeout = config.get_preference('inactivity_timeout') or 300
+    activity_monitor = ActivityMonitor(
+        lock_callback=lambda: _do_lock(state_manager, key_manager),
+        config={
+            'inactivity_timeout': int(inactivity_timeout),
+            'check_interval': 1.0,
+        }
+    )
+    # Привязываем к StateManager для делегирования reset_inactivity_timer
+    state_manager.activity_monitor = activity_monitor
+    activity_monitor.start_monitoring()
+
     event_bus.publish("AppStartup")
 
-    # главное окно
+    # ── Sprint 7: MainWindow (передаём activity_monitor) ───────────────
     window = MainWindow(
         entry_manager=entry_manager,
         key_manager=key_manager,
@@ -216,16 +173,47 @@ def main():
         importer=importer,
         sharing_service=sharing_service,
         qr_service=qr_service,
+        activity_monitor=activity_monitor,
     )
 
-    # подписываем toast-уведомления через Observer 
-    clipboard_service.subscribe(window.show_toast)
+    # ── Sprint 7: PanicMode (создаётся ПОСЛЕ window) ───────────────────
+    panic_mode = PanicMode(
+        config=config.config if hasattr(config, 'config') else {},
+        key_manager=key_manager,
+        state_manager=state_manager,
+        clipboard_service=clipboard_service,
+        audit_logger=audit_logger,
+        main_window=window,
+    )
+    window.panic_mode = panic_mode
 
-    # сохраняем ссылку на config для SettingsDialog
+    clipboard_service.subscribe(window.show_toast)
     window._config = config
 
-    window.show()
+    # Если мы уже разблокированы до создания окна — загрузим записи.
+    if not state_manager.is_locked():
+        window._on_vault_unlocked()
+
+    # Sprint 7: запуск свёрнутым если задано в настройках
+    start_minimized = config.get_preference('start_minimized') or False
+    if start_minimized:
+        window.hide()
+    else:
+        window.show()
+
     sys.exit(app.exec())
+
+
+def _do_lock(state_manager: StateManager, key_manager):
+    """Обратный вызов авто-блокировки: блокирует сессию и ключи."""
+    try:
+        state_manager.lock()
+    except Exception:
+        pass
+    try:
+        key_manager.lock()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
