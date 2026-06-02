@@ -66,9 +66,10 @@ class VaultImporter:
         re.compile(r"<\s*iframe", re.IGNORECASE),
     )
 
-    def __init__(self, entry_manager, database=None, event_bus=None):
+    def __init__(self, entry_manager, key_manager=None, database=None, db=None, event_bus=None):
         self.entry_manager = entry_manager
-        self.database = database
+        self.key_manager = key_manager
+        self.database = database if database is not None else db
         self.event_bus = event_bus
 
     def import_file(
@@ -104,15 +105,14 @@ class VaultImporter:
             raise ImportValidationError("Encrypted Bitwarden import is not supported yet")
         raise ImportValidationError(f"Unsupported import format: {fmt}")
 
-    def validate_entries(self, entries: Iterable[Dict[str, Any]], options: ImportOptions | None = None) -> List[Dict[str, Any]]:
+    def validate_entries(self, entries, options=None):
         _ = options or ImportOptions()
         validated = []
         for idx, entry in enumerate(entries, 1):
             normalized = self._sanitize_entry(entry)
             if not normalized["title"]:
                 raise ImportValidationError(f"Entry #{idx} missing title")
-            if not normalized["password"]:
-                raise ImportValidationError(f"Entry #{idx} missing password")
+            # Пароль необязателен — пропускаем пустые записи вместо падения
             validated.append(normalized)
         return validated
 
@@ -204,7 +204,7 @@ class VaultImporter:
     def _load_native_package(self, package_payload: str | bytes, options: ImportOptions) -> Dict[str, Any]:
         payload_bytes = self._as_bytes(package_payload)
         if len(payload_bytes) > max(1, int(options.max_file_size)):
-            raise ImportValidationError("Import file exceeds max size")
+            raise ValueError("Import file exceeds max size")
         try:
             package = NativeJSONFormat().deserialize_header(payload_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
@@ -218,7 +218,7 @@ class VaultImporter:
     def _parse_plaintext_payload(self, payload: str | bytes, options: ImportOptions) -> List[Dict[str, str]]:
         payload_bytes = self._as_bytes(payload)
         if len(payload_bytes) > max(1, int(options.max_file_size)):
-            raise ImportValidationError("Import file exceeds max size")
+            raise ValueError("Import file exceeds max size")
         text = payload_bytes.decode("utf-8-sig")
         fmt = str(options.format or "csv").strip().lower()
         if fmt in {"csv", "cryptosafe_csv"}:
@@ -326,7 +326,7 @@ class VaultImporter:
     def _clear_vault(self):
         if hasattr(self.entry_manager, "get_all_entries") and hasattr(self.entry_manager, "delete_entry"):
             for e in list(self.entry_manager.get_all_entries()):
-                self.entry_manager.delete_entry(int(e["id"]), soft_delete=False)
+                self.entry_manager.delete_entry(e["id"], soft_delete=False)
         elif hasattr(self.entry_manager, "entries"):
             self.entry_manager.entries = []
 

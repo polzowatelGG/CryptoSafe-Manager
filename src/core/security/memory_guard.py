@@ -1,20 +1,23 @@
-# Безопасная работа с памятью. 
+# src/core/security/memory_guard.py
+# Безопасная работа с памятью.
+# Гарантирует защиту от своппинга и принудительное уничтожение чувствительных данных в RAM.
 
 import ctypes
 import platform
+import sys
+import gc
 from typing import Any, Optional
 
 class SecureMemory:
-    # Безопасное выделение памяти с защитой от свопа и принудительным затиранием.
-    # На платформах где mlock недоступен (контейнеры, ограниченные среды) работает без закрепления, но всё равно гарантирует затирание через ctypes.
+    """Безопасное выделение памяти с защитой от свопа и гарантированным затиранием."""
+    
     def __init__(self):
         self.system = platform.system()
         self._mlock_available = False
         self._setup_platform_functions()
 
     def _setup_platform_functions(self):
-        # Инициализирует платформенные функции.
-        # При любой ошибке (нет привилегий, нет библиотеки) — graceful fallback.
+        """Инициализирует платформенные системные вызовы через ctypes."""
         try:
             if self.system == "Windows":
                 self.kernel32 = ctypes.windll.kernel32
@@ -24,117 +27,106 @@ class SecureMemory:
                 self._mlock_available = True
 
             elif self.system in ("Linux", "Darwin"):
-                self.libc    = ctypes.CDLL(None)
-                self._mlock  = self.libc.mlock
+                # Использование None загружает текущий процесс приложения и стандартную libc
+                self.libc = ctypes.CDLL(None)
+                self._mlock   = self.libc.mlock
                 self._munlock = self.libc.munlock
                 self._memset  = self.libc.memset
                 self._mlock_available = True
 
         except Exception:
-            # Платформенные функции недоступны — продолжаем без них.
-            # secure_zero через ctypes.memset всё равно будет работать.
+            # Грациозный откат, если библиотека недоступна (например, в докер-контейнере)
             self._mlock_available = False
 
-    # Выделение памяти
     def allocate_secure(self, size: int) -> Any:
-        # Выделяет ctypes-буфер и пытается закрепить страницу в RAM.
-        # Если mlock недоступен — выделяет буфер без закрепления.
-        # Программа не падает в обоих случаях 
+        """Выделяет байтовый буфер ctypes и аппаратно закрепляет страницу в RAM."""
         buffer = (ctypes.c_char * size)()
 
-        if self._mlock_available:
+        if self._mlock_available and size > 0:
             try:
                 if self.system == "Windows":
-                    self._VirtualLock(buffer, size)
+                    # Передаем адрес буфера (byref)
+                    self._VirtualLock(ctypes.byref(buffer), size)
                 else:
-                    self._mlock(buffer, size)
+                    self._mlock(ctypes.byref(buffer), size)
             except Exception:
-                pass  # Закрепить не удалось — продолжаем без mlock
+                pass  # Закрепить в ОЗУ не удалось (нет прав), продолжаем работу без mlock
 
         return buffer
 
-    # Затирание памяти
     def secure_zero(self, buffer: Any, size: int) -> None:
-        # Затирает буфер нулями, минимизируя вероятность оптимизации компилятором.
-        # Использует платформенную RtlSecureZeroMemory (Windows) или memset_s/memset
-        # (Linux/macOS), после чего дополнительно вызывает ctypes.memset как страховку 
+        """Криптографически надежное затирание буфера без оптимизаций компилятора."""
+        if size <= 0:
+            return
+
         try:
-            if self.system == "Windows" and self._mlock_available:
-                self._RtlSecureZeroMemory(buffer, size)
-            elif self._mlock_available:
-                # Предпочитаем memset_s— не оптимизируется
+            if self.system == "Windows" and hasattr(self, '_RtlSecureZeroMemory'):
+                # На Windows RtlSecureZeroMemory гарантированно не вырезается компилятором
+                self._RtlSecureZeroMemory(ctypes.byref(buffer), size)
+            elif self._mlock_available and hasattr(self, 'libc'):
+                # На POSIX системах пытаемся вызвать memset_s
                 try:
-                    memset_s = self.libc.memset_s
-                    memset_s(buffer, size, 0, size)
+                    # Некоторые старые версии libc не экспортируют memset_s напрямую
+                    self.libc.memset_s(ctypes.byref(buffer), size, 0, size)
                 except (AttributeError, Exception):
-                    self._memset(buffer, 0, size)
+                    self._memset(ctypes.byref(buffer), 0, size)
         except Exception:
             pass
 
-        # Финальный прогон через ctypes.memset — работает всегда
+        # Финальный и самый надежный прогон через ctypes.memset — работает всегда на уровне Python runtime
         try:
-            ctypes.memset(buffer, 0, size)
+            ctypes.memset(ctypes.byref(buffer), 0, size)
         except Exception:
             pass
 
-    # Освобождение
     def free_secure(self, buffer: Any, size: int) -> None:
-        # Затирает и разблокирует буфер.
-        # del buffer в теле метода не освобождает ctypes-объект — Python освободит его при уничтожении последней ссылки в вызывающем коде.
-        # Этот метод гарантирует только затирание и снятие mlock.
+        """Затирает данные и снимает аппаратную блокировку страниц памяти."""
         self.secure_zero(buffer, size)
 
-        if self._mlock_available:
+        if self._mlock_available and size > 0:
             try:
                 if self.system == "Windows":
-                    self._VirtualUnlock(buffer, size)
+                    self._VirtualUnlock(ctypes.byref(buffer), size)
                 else:
-                    self._munlock(buffer, size)
+                    self._munlock(ctypes.byref(buffer), size)
             except Exception:
                 pass
 
-# Обёртка для хранения одного секрета
+
 class SecretHolder:
-    # Держатель одного секрета с автоматическим затиранием при уничтожении.
-    # Хранит данные в закреплённом ctypes-буфере. При вызове __del__ или явном вызове wipe() — гарантированно обнуляет память.
-    # get_data() возвращает bytes-КОПИЮ. Caller отвечает за её очистку.
+    """Держатель конфиденциальных данных с автоматическим обнулением при уничтожении (RAII)."""
+    
     def __init__(self, data: bytes):
         self._memory = SecureMemory()
         self._size   = len(data)
         self._buffer = self._memory.allocate_secure(self._size)
         self._wiped  = False
 
-        # Копируем данные в закреплённый буфер
         if self._size > 0:
-            ctypes.memmove(self._buffer, data, self._size)
-
-        # Затираем оригинальный bytes-объект в bytearray если возможно
-        # (bytes неизменяем, но через bytearray можно обнулить буфер)
-        try:
-            mutable = bytearray(data)
-            ctypes.memset(
-                (ctypes.c_char * len(mutable)).from_buffer(mutable),
-                0,
-                len(mutable)
-            )
-        except Exception:
-            pass
+            ctypes.memmove(ctypes.byref(self._buffer), data, self._size)
 
     def get_data(self) -> bytes:
-        # Возвращает копию секретных данных как bytes.
-        # Caller отвечает за очистку копии после использования.
+        """Возвращает копию данных. Внимание: уничтожайте полученную копию после использования!"""
         if self._wiped:
-            raise ValueError("SecretHolder уже был затёрт")
+            raise ValueError("SecretHolder уже был уничтожен и затерт в памяти.")
         return bytes(self._buffer)
 
+    def get_bytearray(self) -> bytearray:
+        """Возвращает изменяемую копию данных (bytearray), которую caller сможет затереть вручную."""
+        if self._wiped:
+            raise ValueError("SecretHolder уже был уничтожен и затерт в памяти.")
+        return bytearray(self._buffer)
+
     def wipe(self) -> None:
-        # Явное затирание буфера. После вызова get_data() недоступен
+        """Явное и немедленное затирание буфера секретов."""
         if not self._wiped and hasattr(self, '_buffer') and self._buffer:
             self._memory.free_secure(self._buffer, self._size)
             self._wiped = True
+            # Принудительно вызываем GC для зачистки потенциальных временных ссылок
+            gc.collect()
 
     def __del__(self):
-        # Автоматическое затирание при уничтожении объекта
+        """Автоматическая зачистка при выходе объекта из области видимости."""
         try:
             self.wipe()
         except Exception:

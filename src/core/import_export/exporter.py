@@ -12,9 +12,10 @@ from .formats import BitwardenEncryptedJSONFormat, BitwardenJSONFormat, CSVVault
 
 
 class VaultExporter:
-    def __init__(self, entry_manager, database=None, event_bus=None):
+    def __init__(self, entry_manager, key_manager=None, database=None, db=None, event_bus=None):
         self.entry_manager = entry_manager
-        self.database = database
+        self.key_manager = key_manager
+        self.database = database if database is not None else db
         self.event_bus = event_bus
 
     def get_entries_for_export(self, options: Optional[ExportOptions] = None) -> list[Dict[str, Any]]:
@@ -34,19 +35,11 @@ class VaultExporter:
     # Unified export method for ExportDialog
     # -----------------------------------------------------------------------
 
-    def export(
-        self,
-        filepath: str,
-        password: str,
-        format: str = "encrypted_json",
-        entry_ids: Optional[List[str]] = None,
-        exclude_fields: Optional[List[str]] = None,
-        compress: bool = False,
-    ) -> int:
-        """
-        Unified export method that writes result directly to file.
-        Returns number of exported entries.
-        """
+    def export(self, filepath, password, format="encrypted_json",
+           entry_ids=None, exclude_fields=None, compress=False):
+    # Проверяем что хранилище разблокировано
+        if self.key_manager and not self.key_manager.is_unlocked():
+            raise PermissionError("Хранилище заблокировано.")
         # Преобразуем exclude_fields в include_fields
         include_fields = None
         if exclude_fields:

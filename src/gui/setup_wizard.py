@@ -1,3 +1,4 @@
+#setup_wizard.py
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,

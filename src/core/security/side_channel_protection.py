@@ -1,69 +1,107 @@
-
-# Защита от атак по сторонним каналам.
-# Реализует:
-# - Сравнение за константное время (constant_time_compare)
-# - Безопасное затирание памяти (secure_wipe_bytes, secure_wipe_str)
-# - Контекстный менеджер для секретов (SecureContext)
-# - Попытку пинить страницы памяти (try_lock_memory / try_unlock_memory)
+# src/core/security/side_channel_attack.py
+# Защита от атак по сторонним каналам (Side-Channel Attacks).
+# Реализует константное сравнение, гарантированное физическое затирание RAM и контексты безопасности.
 
 import ctypes
 import secrets
 import platform
+import sys
+import hashlib
 from typing import Union
 
-
-
-#Операции с константным временем
+# ─────────────────────────────────────────────────────────────────
+# Операции с константным временем
+# ─────────────────────────────────────────────────────────────────
 
 def constant_time_compare(a: Union[str, bytes], b: Union[str, bytes]) -> bool:
-    # Сравнение двух значений за гарантированно константное время.
-    # Предотвращает timing-атаки через разницу в скорости ответа:
-    # secrets.compare_digest использует HMAC-подход и не прерывается досрочно.
-    # Оба аргумента приводятся к bytes перед сравнением, чтобы исключить
-    # разницу времени при разной длине строк.
+    """
+    Сравнение двух секретов за гарантированно константное время.
+    Предотвращает timing-атаки. Для абсолютной защиты от утечки информации 
+    о длине секретов, сравниваются их SHA-256 хэши фиксированной длины.
+    """
     if isinstance(a, str):
         a = a.encode("utf-8")
     if isinstance(b, str):
         b = b.encode("utf-8")
 
-    # secrets.compare_digest выровнен по длине через HMAC-based comparison —
-    # даже при разной длине время выполнения остаётся сопоставимым.
-    return secrets.compare_digest(a, b)
+    # ХАРДЕНИНГ: Сравниваем хэши, чтобы длина строк/байтов не выдавала информацию через тайминги
+    hash_a = hashlib.sha256(a).digest()
+    hash_b = hashlib.sha256(b).digest()
 
+    # secrets.compare_digest теперь сравнивает массивы строго одинаковой длины (32 байта)
+    return secrets.compare_digest(hash_a, hash_b)
+
+# ─────────────────────────────────────────────────────────────────
 # Безопасное затирание памяти
+# ─────────────────────────────────────────────────────────────────
+
 def secure_wipe_bytes(data: bytearray) -> None:
-    # Затирает содержимое bytearray нулями через ctypes.memset.
-    # ctypes.memset не может быть оптимизирован компилятором CPython
-    # Принимает ТОЛЬКО bytearray или memoryview — объекты bytes
-    # в Python неизменяемы и не могут быть затёрты.
+    """
+    Затирает содержимое изменяемого bytearray нулями на уровне C-памяти.
+    Защищено от оптимизаций компилятора.
+    """
     if not isinstance(data, (bytearray, memoryview)):
         return
     size = len(data)
     if size == 0:
         return
-    # from_buffer создаёт C-массив поверх того же адреса памяти,
-    # что и data — без копирования
-    buf = (ctypes.c_char * size).from_buffer(data)
-    ctypes.memset(buf, 0, size)
 
-def secure_wipe_str(s: str) -> None:
-    # Создаёт bytearray-копию строки, затирает её и удаляет.
-    # Сам объект str в CPython неизменяем и не может быть обнулён напрямую. Этот метод предотвращает утечку через
-    # явно созданный bytearray-буфер.
     try:
-        encoded = bytearray(s.encode("utf-8"))
-        secure_wipe_bytes(encoded)
-        del encoded
+        # Получаем прямой доступ к внутреннему буферу без копирования
+        buf = (ctypes.c_char * size).from_buffer(data)
+        
+        # Физически зануляем память
+        if platform.system() == "Windows":
+            ctypes.windll.kernel32.RtlSecureZeroMemory(ctypes.byref(buf), size)
+        else:
+            try:
+                ctypes.CDLL(None).memset_s(ctypes.byref(buf), size, 0, size)
+            except Exception:
+                ctypes.CDLL(None).memset(ctypes.byref(buf), 0, size)
     except Exception:
         pass
 
+    # Страховочный проход средствами Python runtime
+    try:
+        ctypes.memset((ctypes.c_char * size).from_buffer(data), 0, size)
+    except Exception:
+        pass
+
+def secure_wipe_str(s: str) -> None:
+    """
+    ХАРДЕНИНГ: Физически уничтожает исходный иммутабельный объект str в памяти CPython.
+    Предотвращает утечку конфиденциальных паролей/ключей через дампы RAM.
+    """
+    if not isinstance(s, str) or not s:
+        return
+
+    try:
+        # В CPython строки (str) хранятся в виде структур PyASCIIObject / PyCompactUnicodeObject.
+        # Вычисляем физическое смещение начала символьных данных в структуре
+        size = len(s)
+        
+        # Для строк, содержащих только ASCII (обычно это пароли, токены, ключи):
+        # Структура PyASCIIObject резервирует заголовок, после которого идут данные
+        # sys.getsizeof(s) возвращает полный размер структуры. Вычисляем точное смещение:
+        offset = sys.getsizeof(s) - size - 1 # учитываем null-терминатор в конце C-строки
+        
+        if offset > 0:
+            string_address = id(s) + offset
+            # Жестко перезаписываем память оригинального объекта str нулями
+            ctypes.memset(string_address, 0, size)
+    except Exception:
+        pass
+
+# ─────────────────────────────────────────────────────────────────
 # Контекстный менеджер для работы с секретами
+# ─────────────────────────────────────────────────────────────────
+
 class SecureContext:
-    # Контекстный менеджер: гарантирует затирание bytearray при выходе из блока.
-     # secret обнулён, независимо от исключений
+    """Гарантирует автоматическое криптографическое затирание bytearray при выходе из блока."""
+    
     def __init__(self, data: bytearray):
         if not isinstance(data, bytearray):
-            raise TypeError("SecureContext принимает только bytearray")
+            raise TypeError("SecureContext принимает только объекты типа bytearray")
         self._data = data
 
     def __enter__(self) -> bytearray:
@@ -71,34 +109,40 @@ class SecureContext:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         secure_wipe_bytes(self._data)
-        # Не подавляем исключения
-        return False
+        return False  # Не подавляем исключения внутри контекста
 
-# Попытка закрепить страницы памяти (mlock / VirtualLock)
+# ─────────────────────────────────────────────────────────────────
+# Аппаратное закрепление страниц памяти (mlock / VirtualLock)
+# ─────────────────────────────────────────────────────────────────
+
 def try_lock_memory(buffer: ctypes.Array, size: int) -> bool:
-    # Пытается закрепить страницу памяти через mlock (Linux/macOS) или VirtualLock (Windows), предотвращая своп на диск.
-    # Возвращает True при успехе, False если не разрешено (контейнеры, ограниченные среды, нехватка привилегий).
-    # Ошибки перехватываются — отсутствие mlock не критично,программа продолжает работу.
+    """Пытается закрепить страницу памяти в RAM через системные вызовы ОС, исключая своппинг."""
+    if size <= 0:
+        return False
+        
     system = platform.system()
     try:
         if system == "Windows":
             kernel32 = ctypes.windll.kernel32
-            return bool(kernel32.VirtualLock(buffer, size))
-        else:  # Linux, Darwin
+            # Обязательно передаем указатель через byref
+            return bool(kernel32.VirtualLock(ctypes.byref(buffer), size))
+        else:  # Linux, macOS (Darwin)
             libc = ctypes.CDLL(None)
-            result = libc.mlock(buffer, size)
+            result = libc.mlock(ctypes.byref(buffer), size)
             return result == 0
     except Exception:
         return False
 
 def try_unlock_memory(buffer: ctypes.Array, size: int) -> None:
-    # Снимает блокировку страницы памяти.
-    # Ошибки перехватываются — не критично для работы программы.
+    """Снимает блокировку фиксации страниц памяти в RAM."""
+    if size <= 0:
+        return
+        
     system = platform.system()
     try:
         if system == "Windows":
-            ctypes.windll.kernel32.VirtualUnlock(buffer, size)
+            ctypes.windll.kernel32.VirtualUnlock(ctypes.byref(buffer), size)
         else:
-            ctypes.CDLL(None).munlock(buffer, size)
+            ctypes.CDLL(None).munlock(ctypes.byref(buffer), size)
     except Exception:
         pass

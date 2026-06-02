@@ -502,6 +502,9 @@ class SharingService:
         ciphertext = base64.b64decode(package["data"]["ciphertext"])
         if checksum(ciphertext) != package["integrity"].get("checksum", ""):
             raise ImportValidationError("Share package checksum mismatch")
+        integrity_hash = package.get("integrity_hash")
+        if integrity_hash and integrity_hash != package["integrity"].get("checksum", ""):
+            raise ImportValidationError("Share package integrity mismatch")
 
     def _validate_share_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = payload.get("entry")
@@ -510,11 +513,7 @@ class SharingService:
             raise ImportValidationError("Share package payload incomplete")
         if not entry.get("title") or not entry.get("password"):
             raise ImportValidationError("Share package entry missing required fields")
-        return {
-            "share_id": str(payload.get("share_id", "")),
-            "entry": {k: str(v) for k, v in entry.items() if k in self.ALLOWED_ENTRY_FIELDS},
-            "permissions": permissions,
-        }
+        return {k: str(v) for k, v in entry.items() if k in self.ALLOWED_ENTRY_FIELDS}
 
     def _key_fingerprint(self, public_key_pem: bytes) -> str:
         if isinstance(public_key_pem, str):

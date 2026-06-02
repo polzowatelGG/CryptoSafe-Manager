@@ -9,3 +9,7 @@ class UnsupportedFormatError(ImportExportError):
 
 class ImportValidationError(ImportExportError):
     """Raised when imported data fails validation or sanitization."""
+    
+    
+class ImportValidationError(ValueError):
+    pass

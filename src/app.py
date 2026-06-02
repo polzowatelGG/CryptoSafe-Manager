@@ -1,6 +1,3 @@
-# Главный модуль приложения — точка входа, инициализация всех компонентов.
-# Sprint 7: добавлены ActivityMonitor и PanicMode.
-
 import sys
 from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox
@@ -13,8 +10,8 @@ from core.state_manager import StateManager
 from core.events import EventBus
 from core.vault.entry_manager import EntryManager
 from gui.main_window import MainWindow
-from gui.setup_wizard import SetupWizard
 from gui.login_dialog import LoginDialog
+from gui.vault_selector_dialog import VaultSelectorDialog
 from core.clipboard.platform_adapter import get_platform_clipboard_adapter
 from core.clipboard.clipboard_service import ClipboardService
 from core.clipboard.clipboard_monitor import ClipboardMonitor
@@ -25,60 +22,71 @@ from core.import_export.exporter import VaultExporter
 from core.import_export.importer import VaultImporter
 from core.import_export.sharing_service import SharingService
 from core.import_export.key_exchange import QRCodeService
-# Sprint 7
-from core.security.activity_monitor import ActivityMonitor
-from core.security.panic_mode import PanicMode
+
+
+KDF_CONFIG = {
+    "argon2_time":        3,
+    "argon2_memory":      65536,
+    "argon2_parallelism": 4,
+    "pbkdf2_iterations":  100000,
+}
+
+
+def _init_new_vault(db_path: str, password: str) -> tuple:
+    """Создаёт новую БД, инициализирует KeyManager. Возвращает (pool, key_manager)."""
+    pool = DatabasePool(db_path)
+    pool.migrate()
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, config=KDF_CONFIG)
+    key_manager.initialize(password)
+    key_manager.unlock(password)
+    return pool, key_manager
+
+
+def _open_existing_vault(db_path: str) -> tuple:
+    """Открывает существующую БД. Возвращает (pool, key_manager) — ключ ещё не разблокирован."""
+    pool = DatabasePool(db_path)
+    pool.migrate()
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, config=KDF_CONFIG)
+    return pool, key_manager
 
 
 def main():
     app = QApplication(sys.argv)
     config = ConfigManager()
-    db_path = config.get_database_path()
-
     event_bus = EventBus()
 
-    if not db_path or not Path(db_path).exists():
-        wizard = SetupWizard()
-        if wizard.exec() != QDialog.DialogCode.Accepted:
-            sys.exit(0)
+    # ------------------------------------------------------------------ #
+    # Шаг 1: выбор / создание хранилища
+    # ------------------------------------------------------------------ #
+    selector = VaultSelectorDialog(config)
 
-        db_path = wizard.db_path
-        config.set_database_path(db_path)
-        config.save()
+    # Если в конфиге есть последняя БД — добавляем в список недавних
+    last_db = config.get_database_path()
+    if last_db and Path(last_db).exists():
+        selector.add_to_recent(last_db)
+        selector._load_recent()
 
-        pool = DatabasePool(db_path)
-        pool.migrate()
+    if selector.exec() != QDialog.DialogCode.Accepted:
+        sys.exit(0)
 
-        key_storage = KeyStorage(pool)
-        key_manager = KeyManager(key_storage, config={
-            "argon2_time":        3,
-            "argon2_memory":      65536,
-            "argon2_parallelism": 4,
-            "pbkdf2_iterations":  100000,
-        })
+    db_path = selector.selected_db_path
+    new_vault_password = selector.get_new_vault_password()
 
-        password = wizard.password_entry.text()
-        key_manager.initialize(password)
-        key_manager.unlock(password)
-
-        state_manager = StateManager(config, event_bus=event_bus)
+    # ------------------------------------------------------------------ #
+    # Шаг 2: инициализация KeyManager
+    # ------------------------------------------------------------------ #
+    if new_vault_password is not None:
+        # Только что создано новое хранилище — KeyManager уже инициализирован
+        pool, key_manager = _init_new_vault(db_path, new_vault_password)
+        state_manager = StateManager(config, key_manager=key_manager, event_bus=event_bus)
         authenticator = Authenticator(key_manager, event_bus, state_manager)
-        authenticator.failed_attempts = 0
         state_manager.unlock()
         event_bus.publish("UserLoggedIn")
-
     else:
-        pool = DatabasePool(db_path)
-        pool.migrate()
-
-        key_storage = KeyStorage(pool)
-        key_manager = KeyManager(key_storage, config={
-            "argon2_time":        3,
-            "argon2_memory":      65536,
-            "argon2_parallelism": 4,
-            "pbkdf2_iterations":  100000,
-        })
-
+        # Открываем существующее — нужен логин
+        pool, key_manager = _open_existing_vault(db_path)
         state_manager = StateManager(config, key_manager=key_manager, event_bus=event_bus)
         authenticator = Authenticator(key_manager, event_bus, state_manager)
 
@@ -86,9 +94,16 @@ def main():
         if login_dialog.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
 
+    # Сохраняем путь к БД и добавляем в недавние
+    config.set_database_path(db_path)
+    config.save()
+    selector.add_to_recent(db_path)
+
+    # ------------------------------------------------------------------ #
+    # Шаг 3: остальные сервисы (без изменений)
+    # ------------------------------------------------------------------ #
     entry_manager = EntryManager(pool, key_manager)
 
-    # Clipboard
     clipboard_adapter = get_platform_clipboard_adapter()
     clipboard_service = ClipboardService(
         platform_adapter=clipboard_adapter,
@@ -100,15 +115,16 @@ def main():
     clipboard_service.set_monitor(monitor)
     monitor.start()
 
-    # Audit
     signer = LogSigner(key_manager)
     audit_logger = AuditLogger(pool, signer, event_bus)
     log_verifier = LogVerifier(pool, signer)
 
-    # Верификация при старте
+    # Верификация целостности лога при старте
     try:
         with pool.connection() as conn:
-            row = conn.execute("SELECT COUNT(*) as cnt FROM audit_log").fetchone()
+            row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM audit_log"
+            ).fetchone()
         total_entries = row["cnt"] if row else 0
 
         if total_entries > 1000:
@@ -118,50 +134,61 @@ def main():
             startup_result = log_verifier.verify_log(start_seq=0)
             checked_label = f"все {total_entries}"
 
-        if not startup_result['verified']:
+        if not startup_result["verified"]:
             QMessageBox.critical(
-                None, "⚠️ Нарушение целостности журнала аудита",
+                None,
+                "⚠️ Нарушение целостности журнала аудита",
                 f"Обнаружены повреждённые записи при запуске!\n\n"
                 f"Проверено записей: {checked_label}\n"
-                f"Повреждённых подписей: {len(startup_result.get('invalid_entries', []))}\n"
-                f"Разрывов цепочки: {len(startup_result.get('chain_breaks', []))}")
+                f"Повреждённых подписей: "
+                f"{len(startup_result.get('invalid_entries', []))}\n"
+                f"Разрывов цепочки: "
+                f"{len(startup_result.get('chain_breaks', []))}\n\n"
+                f"Рекомендуется выполнить полную верификацию\n"
+                f"через меню Вид → Проверить целостность логов."
+            )
             audit_logger.log_event(
-                event_type="AUDIT_INTEGRITY_FAILED", severity="CRITICAL",
+                event_type="AUDIT_INTEGRITY_FAILED",
+                severity="CRITICAL",
                 source="startup",
-                details={"invalid_entries": len(startup_result.get('invalid_entries', [])),
-                         "chain_breaks": len(startup_result.get('chain_breaks', [])),
-                         "checked": checked_label})
+                details={
+                    "invalid_entries": len(startup_result.get("invalid_entries", [])),
+                    "chain_breaks":    len(startup_result.get("chain_breaks", [])),
+                    "checked":         checked_label,
+                }
+            )
     except Exception as e:
         try:
             audit_logger.log_event(
-                event_type="AUDIT_STARTUP_VERIFY_ERROR", severity="ERROR",
-                source="startup", details={"error": str(e)[:200]})
+                event_type="AUDIT_STARTUP_VERIFY_ERROR",
+                severity="ERROR",
+                source="startup",
+                details={"error": str(e)[:200]}
+            )
         except Exception:
             pass
 
-    # Import/Export/Sharing
-    exporter = VaultExporter(entry_manager=entry_manager, database=pool)
-    importer = VaultImporter(entry_manager=entry_manager, database=pool)
-    sharing_service = SharingService(entry_manager=entry_manager, key_manager=key_manager,
-                                      db=pool, audit_logger=audit_logger)
-    qr_service = QRCodeService(ttl_seconds=300)
-
-    # ── Sprint 7: ActivityMonitor ──────────────────────────────────────
-    inactivity_timeout = config.get_preference('inactivity_timeout') or 300
-    activity_monitor = ActivityMonitor(
-        lock_callback=lambda: _do_lock(state_manager, key_manager),
-        config={
-            'inactivity_timeout': int(inactivity_timeout),
-            'check_interval': 1.0,
-        }
+    exporter = VaultExporter(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
     )
-    # Привязываем к StateManager для делегирования reset_inactivity_timer
-    state_manager.activity_monitor = activity_monitor
-    activity_monitor.start_monitoring()
+    importer = VaultImporter(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
+    )
+    sharing_service = SharingService(
+        entry_manager=entry_manager,
+        key_manager=key_manager,
+        db=pool,
+        audit_logger=audit_logger,
+    )
+    
+    qr_service = QRCodeService(ttl_seconds=300)
 
     event_bus.publish("AppStartup")
 
-    # ── Sprint 7: MainWindow (передаём activity_monitor) ───────────────
     window = MainWindow(
         entry_manager=entry_manager,
         key_manager=key_manager,
@@ -173,47 +200,11 @@ def main():
         importer=importer,
         sharing_service=sharing_service,
         qr_service=qr_service,
-        activity_monitor=activity_monitor,
     )
-
-    # ── Sprint 7: PanicMode (создаётся ПОСЛЕ window) ───────────────────
-    panic_mode = PanicMode(
-        config=config.config if hasattr(config, 'config') else {},
-        key_manager=key_manager,
-        state_manager=state_manager,
-        clipboard_service=clipboard_service,
-        audit_logger=audit_logger,
-        main_window=window,
-    )
-    window.panic_mode = panic_mode
-
     clipboard_service.subscribe(window.show_toast)
     window._config = config
-
-    # Если мы уже разблокированы до создания окна — загрузим записи.
-    if not state_manager.is_locked():
-        window._on_vault_unlocked()
-
-    # Sprint 7: запуск свёрнутым если задано в настройках
-    start_minimized = config.get_preference('start_minimized') or False
-    if start_minimized:
-        window.hide()
-    else:
-        window.show()
-
+    window.show()
     sys.exit(app.exec())
-
-
-def _do_lock(state_manager: StateManager, key_manager):
-    """Обратный вызов авто-блокировки: блокирует сессию и ключи."""
-    try:
-        state_manager.lock()
-    except Exception:
-        pass
-    try:
-        key_manager.lock()
-    except Exception:
-        pass
 
 
 if __name__ == "__main__":
