@@ -18,18 +18,18 @@ from typing import Optional, Dict, Any
 class _ShareThread(QThread):
     finished = pyqtSignal(object)   # share_result dict
     error    = pyqtSignal(str)
-
+    
     def __init__(self, service, entry_id, method, recipient,
                  permissions, expires_days, password, public_key_pem):
         super().__init__()
-        self.service          = service
-        self.entry_id         = entry_id
-        self.method           = method
-        self.recipient        = recipient
-        self.permissions      = permissions
-        self.expires_days     = expires_days
-        self.password         = password
-        self.public_key_pem   = public_key_pem
+        self.service        = service
+        self.entry_id       = entry_id
+        self.method         = method
+        self.recipient      = recipient
+        self.permissions    = permissions
+        self.expires_days   = expires_days
+        self.password       = password
+        self.public_key_pem = public_key_pem
 
     def run(self):
         try:
@@ -55,11 +55,12 @@ class SharingDialog(QDialog):
     # - История     — активные и истёкшие шаринги
     # - Получить    — расшифровать полученный пакет
     def __init__(self, sharing_service, entry_id: Optional[str] = None,
-                 entry_title: str = "", parent=None):
+                 entry_title: str = "", qr_service=None, parent=None):
         super().__init__(parent)
         self.service     = sharing_service
         self.entry_id    = entry_id
         self.entry_title = entry_title
+        self.qr_service  = qr_service
         self._thread     = None
         self._last_result: Optional[Dict[str, Any]] = None
 
@@ -406,6 +407,28 @@ class SharingDialog(QDialog):
             except Exception as e:
                 QMessageBox.warning(self, "Ошибка сохранения", str(e))
 
+        # Предлагаем показать QR
+        if self.qr_service is not None and self.qr_service.is_qr_available():
+            reply = QMessageBox.question(
+                self, "QR-код",
+                "Показать QR-код для передачи пакета получателю?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                try:
+                    qr_results = self.qr_service.generate_share_qr(
+                        share_package=result["package"]
+                    )
+                    from gui.qr_viewer_dialog import QRViewerDialog
+                    dlg = QRViewerDialog(
+                        qr_service=self.qr_service,
+                        qr_results=qr_results,
+                        parent=self,
+                    )
+                    dlg.exec()
+                except Exception as e:
+                    QMessageBox.warning(self, "Ошибка QR", str(e))
+
         self._load_history()
 
     def _on_share_error(self, message: str):
@@ -521,8 +544,18 @@ class SharingDialog(QDialog):
             QMessageBox.critical(self, "Ошибка", f"Не удалось прочитать файл: {e}")
             return
 
-        password   = self.receive_password_input.text() or None
+        # Определяем метод шифрования из пакета
+        method = package.get("encryption_method") or package.get("encryption", {}).get("method")
+
+        password   = self.receive_password_input.text().strip() or None
         privkey    = self._privkey_data
+
+        if method == "password" and not password:
+            QMessageBox.warning(self, "Ошибка", "Введите пароль для расшифровки.")
+            return
+        if method == "public_key" and not privkey:
+            QMessageBox.warning(self, "Ошибка", "Загрузите приватный ключ.")
+            return
 
         try:
             entry = self.service.receive_entry(
@@ -530,14 +563,27 @@ class SharingDialog(QDialog):
                 password=password,
                 private_key_pem=privkey,
             )
+
+            if not entry:
+                QMessageBox.warning(self, "Ошибка", "Расшифровка вернула пустой результат.")
+                return
+
+            # Проверяем что запись не пустая
+            if not any([
+                entry.get("title"), entry.get("username"),
+                entry.get("password"), entry.get("url"),
+            ]):
+                QMessageBox.warning(
+                    self, "Предупреждение",
+                    "Расшифрованная запись выглядит пустой.\n"
+                    f"Полученные данные: {list(entry.keys())}"
+                )
+
             self._received_entry = entry
 
             # Показываем превью (без пароля)
-            preview = {
-                k: v for k, v in entry.items()
-                if k != "password"
-            }
-            preview["password"] = "••••••••"
+            preview = {k: v for k, v in entry.items() if k != "password"}
+            preview["password"] = "••••••••" if entry.get("password") else "(пусто)"
             self.received_preview.setPlainText(
                 json.dumps(preview, ensure_ascii=False, indent=2)
             )
@@ -546,7 +592,11 @@ class SharingDialog(QDialog):
         except ValueError as e:
             QMessageBox.warning(self, "Ошибка расшифровки", str(e))
         except Exception as e:
-            QMessageBox.critical(self, "Ошибка", str(e))
+            import traceback
+            QMessageBox.critical(
+                self, "Ошибка",
+                f"{e}\n\n{traceback.format_exc()[-500:]}"
+            )
 
     def _save_received(self):
         if not self._received_entry:

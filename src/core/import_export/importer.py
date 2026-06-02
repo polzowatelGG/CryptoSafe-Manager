@@ -1,660 +1,339 @@
-# src/core/import_export/importer.py
-# Импорт записей в хранилище из различных форматов.
-# Поддерживает: encrypted JSON (нативный), CSV, Bitwarden JSON, LastPass CSV.
-# Все операции логируются в audit_log и сохраняются в import_export_history.
 
-import csv
-import gzip
-import hashlib
-import io
-import json
-import os
 import re
-import threading
-from base64 import b64decode
-from datetime import datetime
+import base64
+import gzip
+import hmac
+import json
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-import logging as _imp_log
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from cryptography.hazmat.primitives import hashes
+from typing import Any, Dict, Iterable, List
+
+from .crypto import checksum, decrypt_aes_gcm, decrypt_with_private_key, derive_password_key, wipe_bytes
+from .exceptions import ImportValidationError
+from .formats import BitwardenJSONFormat, CSVVaultFormat, LastPassCSVFormat, NativeJSONFormat
+from .models import ImportOptions
 
 
-
-# Константы
-MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024   # 10 МБ 
-IMPORT_TIMEOUT_SECONDS = 30              # таймаут обработки 
-
-# Обязательные поля записи — остальные получают значения по умолчанию
-REQUIRED_FIELDS = {"title"}
-
-# Максимальная длина строковых полей для санитизации (SEC-2)
-FIELD_MAX_LEN = {
-    "title":    200,
-    "username": 500,
-    "password": 1000,
-    "url":      2000,
-    "notes":    5000,
-    "category": 100,
-    "tags":     500,
-}
-
-# Паттерны для обнаружения вредоносного содержимого (SEC-5 Sprint 6)
-_MALICIOUS_PATTERNS = [
-    re.compile(r"<script", re.IGNORECASE),
-    re.compile(r"javascript:", re.IGNORECASE),
-    re.compile(r"data:text/html", re.IGNORECASE),
-    re.compile(r"vbscript:", re.IGNORECASE),
-]
-_CSV_FORMULA_RE = re.compile(r'^[=+\-@|]')
-
-
-# Вспомогательные функции
-def _derive_export_key(password: str, salt: bytes,
-                       iterations: int = 100_000) -> bytes:
-    #Деривация ключа из пароля — зеркало функции в exporter.py 
-    kdf = PBKDF2HMAC(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        iterations=iterations,
-    )
-    return kdf.derive(password.encode("utf-8"))
-
-
-def _sanitize_field(value: Any, field_name: str) -> str:
-
-    # Санитизация одного поля записи (SEC-2, IMP-2):
-    # - приводит к строке
-    # - обрезает до максимальной длины
-    # - удаляет управляющие символы
-    # - проверяет на вредоносные паттерны
-    if value is None:
-        return ""
-    text = str(value)
-
-    # Удаляем управляющие символы кроме \n и \t
-    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", text)
-
-    # Проверяем на вредоносные паттерны
-    for pattern in _MALICIOUS_PATTERNS:
-        if pattern.search(text):
-            # Не бросаем исключение — просто удаляем опасный фрагмент
-            text = pattern.sub("[REMOVED]", text)
-
-    # Обрезаем до лимита
-    if _CSV_FORMULA_RE.match(text):
-        text = "'" + text  # апостроф — стандартная защита от formula injection
-    max_len = FIELD_MAX_LEN.get(field_name, 1000)
-    return text[:max_len]
-
-
-def _sanitize_entry(raw: Dict[str, Any]) -> Dict[str, Any]:
-    # Санитизирует все поля записи
-    return {
-        "title":    _sanitize_field(raw.get("title"),    "title"),
-        "username": _sanitize_field(raw.get("username"), "username"),
-        "password": _sanitize_field(raw.get("password"), "password"),
-        "url":      _sanitize_field(raw.get("url"),      "url"),
-        "notes":    _sanitize_field(raw.get("notes"),    "notes"),
-        "category": _sanitize_field(raw.get("category"), "category"),
-        "tags":     _sanitize_field(raw.get("tags"),     "tags"),
-    }
-
-
-def _detect_format(filepath: str) -> str:
-    # Автоматически определяет формат файла 
-    # Порядок: по содержимому > по расширению.
-    # Возвращает: 'encrypted_json' | 'bitwarden' | 'lastpass_csv' | 'csv
-    path = Path(filepath)
-    ext  = path.suffix.lower()
-
-    # Читаем первые 4 КБ для определения формата
-    try:
-        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-            head = f.read(4096)
-    except Exception:
-        # Если не читается как текст — считаем бинарным/неизвестным
-        return "unknown"
-
-    # Нативный зашифрованный формат CryptoSafe
-    if '"cryptosafe_export"' in head and '"true"' not in head:
-        try:
-            data = json.loads(head if len(head) < 4096 else open(filepath).read())
-            if data.get("cryptosafe_export") is True:
-                return "encrypted_json"
-        except Exception:
-            pass
-
-    # Bitwarden JSON — содержит "items" и "encrypted": false/true
-    if '"items"' in head and ('"login"' in head or '"encrypted"' in head):
-        return "bitwarden"
-
-    # LastPass CSV — первая строка содержит характерные заголовки
-    first_line = head.split("\n")[0].lower()
-    if "url,username,password,extra,name,grouping,fav" in first_line:
-        return "lastpass_csv"
-
-    # Обычный CSV
-    if ext in (".csv",):
-        return "csv"
-
-    # JSON без признаков известных форматов
-    if ext in (".json",):
-        return "unknown"
-
-
-def _entry_fingerprint(entry: Dict[str, Any]) -> str:
-    # Создаёт отпечаток записи для дедупликации 
-    # Используется title + username + url (нижний регистр).
-    key = (
-        (entry.get("title")    or "").lower().strip() + "|" +
-        (entry.get("username") or "").lower().strip() + "|" +
-        (entry.get("url")      or "").lower().strip()
-    )
-    return hashlib.sha256(key.encode("utf-8")).hexdigest()
-
-
-def _entries_are_equal(existing: Dict[str, Any], incoming: Dict[str, Any]) -> bool:
-    fields_to_compare = ["title", "username", "password", "url", "notes", "category", "tags"]
-    for field in fields_to_compare:
-        if (existing.get(field) or "") != (incoming.get(field) or ""):
-            return False
-    return True
-
-
-# Результат импорта
+@dataclass
 class ImportResult:
-    # Итог операции импорта — передаётся в UI для отображения
-
-    def __init__(self):
-        self.total_parsed:    int = 0   # всего прочитано из файла
-        self.imported:        int = 0   # добавлено новых записей
-        self.updated:         int = 0   # обновлено существующих (merge)
-        self.skipped:         int = 0   # пропущено (дубликаты в replace/dry-run)
-        self.errors:          List[str] = []
-        self.dry_run_entries: List[Dict] = []  # для dry-run превью
-
-    def __repr__(self) -> str:
-        return (
-            f"ImportResult(parsed={self.total_parsed}, "
-            f"imported={self.imported}, updated={self.updated}, "
-            f"skipped={self.skipped}, errors={len(self.errors)})"
-        )
+    total_parsed: int = 0
+    created: int = 0
+    updated: int = 0
+    skipped: int = 0
+    imported: int = 0
+    mode: str = "dry-run"
+    errors: List[str] = field(default_factory=list)
+    dry_run_entries: List[Dict[str, Any]] = field(default_factory=list)
 
 
+def _normalize_mode(mode: str) -> str:
+    return str(mode or "dry-run").replace("_", "-").strip().lower()
 
-# Основной класс импортёра
+
+def _detect_format(path: str) -> str:
+    file_path = Path(path)
+    suffix = file_path.suffix.lower()
+    if suffix == ".csv":
+        try:
+            text = file_path.read_text(encoding="utf-8-sig")
+        except Exception:
+            return "csv"
+        header = text.lstrip().splitlines()[0] if text else ""
+        if header.lower().startswith("url,username,password"):
+            return "lastpass_csv"
+        return "csv"
+    if suffix in {".json", ".txt"}:
+        try:
+            data = json.loads(file_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            return "csv"
+        if isinstance(data, dict):
+            if data.get("cryptosafe_export"):
+                return "encrypted_json"
+            if data.get("encrypted") and data.get("passwordProtected"):
+                return "bitwarden_encrypted"
+            if isinstance(data.get("items"), list):
+                return "bitwarden"
+        return "csv"
+    return "csv"
+
+
 class VaultImporter:
-    # Импортирует записи в хранилище из файлов различных форматов.
+    MALICIOUS_PATTERNS = (
+        re.compile(r"<\s*script", re.IGNORECASE),
+        re.compile(r"javascript\s*:", re.IGNORECASE),
+        re.compile(r"<\s*iframe", re.IGNORECASE),
+    )
 
-    # Режимы 
-    #     merge   — добавляет новые, обновляет существующие по отпечатку
-    #     replace — очищает хранилище и импортирует всё заново
-    #     dry_run — только парсит и возвращает превью, ничего не сохраняет
-
-    # Безопасность:
-    #     - лимит файла 10 МБ 
-    #     - таймаут обработки 30 с 
-    #     - санитизация всех полей 
-    #     - проверка на вредоносные паттерны 
-    #     - верификация шифрования перед дешифрованием 
-    def __init__(self, entry_manager, key_manager, db, audit_logger=None):
+    def __init__(self, entry_manager, key_manager=None, database=None, db=None, event_bus=None):
         self.entry_manager = entry_manager
-        self.key_manager   = key_manager
-        self.db            = db
-        self.audit_logger  = audit_logger
+        self.key_manager = key_manager
+        self.database = database if database is not None else db
+        self.event_bus = event_bus
 
-    # Публичный API
     def import_file(
         self,
         filepath: str,
-        password: Optional[str] = None,
-        format: Optional[str] = None,
-        mode: str = "merge",
-    ) -> ImportResult:
-        # Основной метод импорта.
-
-        # Args:
-        #     filepath: путь к файлу
-        #     password: пароль для расшифровки (для encrypted_json)
-        #     format:   явное указание формата (None = авто-определение)
-        #     mode:     'merge' | 'replace' | 'dry_run'
-
-        # Returns:
-        #     ImportResult с деталями операции
-
-        # Raises:
-        #     PermissionError: хранилище заблокировано
-        #     ValueError:      неверный формат, файл слишком большой, таймаут
-        #     FileNotFoundError: файл не найден
-        if not self.key_manager.is_unlocked():
-            raise PermissionError("Хранилище заблокировано.")
-
-        _imp_log.getLogger(__name__).warning(
-            "IMP-01: Import running in main process without sandbox isolation. "
-            "Only import files from trusted sources."
+        password: str | None = None,
+        format: str | None = None,
+        mode: str = "dry_run",
+        duplicate_strategy: str = "skip",
+        max_file_size: int = 10 * 1024 * 1024,
+        timeout_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        if not filepath:
+            raise ValueError("File path is required")
+        fmt = format or "auto"
+        if fmt == "auto":
+            fmt = _detect_format(filepath)
+        opts = ImportOptions(
+            format=fmt,
+            mode=_normalize_mode(mode),
+            duplicate_strategy=duplicate_strategy,
+            max_file_size=max_file_size,
+            timeout_seconds=timeout_seconds,
         )
+        payload = Path(filepath).read_bytes()
+        if fmt == "encrypted_json":
+            if not password:
+                raise ValueError("Password required for encrypted_json import")
+            return self.import_encrypted_json(payload, password, opts)
+        if fmt in {"csv", "cryptosafe_csv", "lastpass", "lastpass_csv", "bitwarden", "bitwarden_json"}:
+            return self.import_plaintext(payload, opts)
+        if fmt == "bitwarden_encrypted":
+            raise ImportValidationError("Encrypted Bitwarden import is not supported yet")
+        raise ImportValidationError(f"Unsupported import format: {fmt}")
 
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"Файл не найден: {filepath}")
+    def validate_entries(self, entries, options=None):
+        _ = options or ImportOptions()
+        validated = []
+        for idx, entry in enumerate(entries, 1):
+            normalized = self._sanitize_entry(entry)
+            if not normalized["title"]:
+                raise ImportValidationError(f"Entry #{idx} missing title")
+            # Пароль необязателен — пропускаем пустые записи вместо падения
+            validated.append(normalized)
+        return validated
 
-        # Проверяем размер файла (IMP-4)
-        file_size = os.path.getsize(filepath)
-        if file_size > MAX_FILE_SIZE_BYTES:
-            raise ValueError(
-                f"Файл слишком большой: {file_size // 1024 // 1024} МБ. "
-                f"Максимум: {MAX_FILE_SIZE_BYTES // 1024 // 1024} МБ."
-            )
+    def preview_encrypted_json(self, package_payload: str | bytes, password: str, options: ImportOptions | None = None) -> List[Dict[str, Any]]:
+        opts = options or ImportOptions(format="encrypted_json")
+        package = self._load_native_package(package_payload, opts)
+        plaintext = self._decrypt_native_payload(package, password)
+        entries = self.validate_entries(plaintext.get("entries", []), opts)
+        return entries
 
-        if mode not in ("merge", "replace", "dry_run"):
-            raise ValueError(f"Неизвестный режим: {mode}. Доступны: merge, replace, dry_run")
-
-        # Определяем формат
-        detected_format = format or _detect_format(filepath)
-        if detected_format == "unknown":
-            raise ValueError(
-                "Не удалось определить формат файла. "
-                "Укажите формат явно через параметр format."
-            )
-
-        # Запускаем импорт с таймаутом (IMP-4)
-        result_holder: List[Any] = [None, None]  # [result, exception]
-
-        def _do_import():
-            try:
-                result_holder[0] = self._run_import(
-                    filepath, password, detected_format, mode, file_size
-                )
-            except Exception as exc:
-                result_holder[1] = exc
-
-        thread = threading.Thread(target=_do_import, daemon=True)
-        thread.start()
-        thread.join(timeout=IMPORT_TIMEOUT_SECONDS)
-
-        if thread.is_alive():
-            raise ValueError(
-                f"Импорт превысил таймаут {IMPORT_TIMEOUT_SECONDS} секунд. "
-                "Файл может быть слишком большим или повреждённым."
-            )
-
-        if result_holder[1] is not None:
-            raise result_holder[1]
-
-        return result_holder[0]
-
-    # Внутренняя логика импорта
-    def _run_import(
-        self,
-        filepath: str,
-        password: Optional[str],
-        format: str,
-        mode: str,
-        file_size: int,
-    ) -> ImportResult:
-        # Выполняет фактический импорт в зависимости от формата
-
-        # Парсим файл в список сырых записей
-        parse_dispatch = {
-            "encrypted_json": self._parse_encrypted_json,
-            "bitwarden":      self._parse_bitwarden,
-            "lastpass_csv":   self._parse_lastpass_csv,
-            "csv":            self._parse_csv,
-        }
-        parser = parse_dispatch.get(format)
-        if not parser:
-            raise ValueError(f"Нет парсера для формата: {format}")
-
-        raw_entries = parser(filepath, password)
-
-        result = ImportResult()
-        result.total_parsed = len(raw_entries)
-
-        # Санитизируем все записи (SEC-2)
-        clean_entries = []
-        for i, raw in enumerate(raw_entries):
-            try:
-                clean = _sanitize_entry(raw)
-                # Проверяем обязательные поля (IMP-2)
-                if not clean.get("title"):
-                    result.errors.append(f"Запись #{i+1}: пустое поле title — пропущена")
-                    result.skipped += 1
-                    continue
-                clean_entries.append(clean)
-            except Exception as e:
-                result.errors.append(f"Запись #{i+1}: ошибка санитизации — {e}")
-                result.skipped += 1
-
-        # Dry-run: только возвращаем превью
-        if mode == "dry_run":
-            result.dry_run_entries = clean_entries
-            result.imported = len(clean_entries)
+    def import_encrypted_json(self, package_payload: str | bytes, password: str, options: ImportOptions | None = None) -> Dict[str, Any]:
+        start = time.monotonic()
+        opts = options or ImportOptions(format="encrypted_json", mode="dry-run")
+        entries = self.preview_encrypted_json(package_payload, password, opts)
+        result = ImportResult(
+            total_parsed=len(entries),
+            created=0,
+            updated=0,
+            skipped=0,
+            imported=0,
+            mode=opts.mode,
+            dry_run_entries=entries if opts.mode == "dry-run" else [],
+        )
+        if opts.mode == "dry-run":
+            self._record_history(
+                "import", "encrypted_json", "AES-GCM", len(entries),
+                len(self._as_bytes(package_payload)), "dry-run", "validated", result.__dict__)
             return result
 
-        # Replace: очищаем хранилище перед импортом
-        if mode == "replace":
+        if opts.mode == "replace":
             self._clear_vault()
-
-        # Получаем отпечатки существующих записей для дедупликации (IMP-2)
-        existing_fingerprints: Dict[str, str] = {}  # fingerprint → entry_id
-        if mode == "merge":
-            existing_fingerprints = self._get_existing_fingerprints()
-
-        # Сохраняем записи
-        for entry in clean_entries:
-            try:
-                fingerprint = _entry_fingerprint(entry)
-
-                if mode == "merge" and fingerprint in existing_fingerprints:
-                    existing_id = existing_fingerprints[fingerprint]
-                    existing_entry = self.entry_manager.get_entry(existing_id)
-                    if _entries_are_equal(existing_entry, entry):
-                        result.skipped += 1
-                        continue
-                    self.entry_manager.update_entry(existing_id, entry)
-                    result.updated += 1
-                else:
-                    self.entry_manager.create_entry(entry)
-                    result.imported += 1
-
-            except Exception as e:
-                result.errors.append(
-                    f"Ошибка сохранения '{entry.get('title', '?')}': {e}"
-                )
+        existing = {} if opts.mode == "replace" else self._existing_entries_by_identity()
+        deadline = start + max(1, int(opts.timeout_seconds))
+        for entry in entries:
+            if time.monotonic() > deadline:
+                raise ImportValidationError("Import timed out")
+            ident = self._identity(entry)
+            existing_entry = existing.get(ident)
+            if existing_entry and opts.duplicate_strategy == "skip":
                 result.skipped += 1
+                continue
+            if existing_entry and opts.duplicate_strategy == "replace":
+                self.entry_manager.update_entry(existing_entry["id"], entry)
+                result.updated += 1
+                continue
+            self.entry_manager.create_entry(entry)
+            result.created += 1
 
-        # Записываем в историю 
+        result.imported = result.created
         self._record_history(
-            operation_type="import",
-            format=format,
-            entry_count=result.imported + result.updated,
-            filepath=filepath,
-            file_size=file_size,
-        )
-
-        # Логируем в аудит 
-        self._log_audit(
-            event_type="VAULT_IMPORTED",
-            details={
-                "format":   format,
-                "mode":     mode,
-                "imported": result.imported,
-                "updated":  result.updated,
-                "skipped":  result.skipped,
-                "errors":   len(result.errors),
-                "filename": Path(filepath).name,
-            }
-        )
-
+            "import", "encrypted_json", "AES-GCM", len(entries),
+            len(self._as_bytes(package_payload)), "applied", "verified", result.__dict__)
         return result
 
-    # Парсеры форматов
-    def _parse_encrypted_json(
-        self, filepath: str, password: Optional[str]
-    ) -> List[Dict]:
-        # Парсит нативный зашифрованный формат CryptoSafe 
-        # Верифицирует структуру ПЕРЕД попыткой расшифровки 
-        if not password:
-            raise ValueError(
-                "Для импорта зашифрованного файла CryptoSafe необходим пароль."
-            )
+    def preview_plaintext(self, payload: str | bytes, options: ImportOptions | None = None) -> List[Dict[str, Any]]:
+        opts = options or ImportOptions(format="csv")
+        raw_entries = self._parse_plaintext_payload(payload, opts)
+        return self.validate_entries(raw_entries, opts)
 
-        with open(filepath, "r", encoding="utf-8") as f:
-            document = json.load(f)
+    def import_plaintext(self, payload: str | bytes, options: ImportOptions | None = None) -> Dict[str, Any]:
+        start = time.monotonic()
+        opts = options or ImportOptions(format="csv", mode="dry-run")
+        entries = self.preview_plaintext(payload, opts)
+        result = self._apply_entries(entries, opts, start)
+        self._record_history(
+            "import", opts.format, "none", len(entries), len(self._as_bytes(payload)),
+            checksum(self._as_bytes(payload)), "validated" if opts.mode == "dry-run" else "verified", result.__dict__ if isinstance(result, ImportResult) else result
+        )
+        return result
 
-        # Верификация структуры 
-        if not document.get("cryptosafe_export"):
-            raise ValueError("Файл не является экспортом CryptoSafe.")
+    def _sanitize_entry(self, entry: Dict[str, Any]) -> Dict[str, str]:
+        return {
+            "title": self._sanitize_text(entry.get("title", "")),
+            "username": self._sanitize_text(entry.get("username", "")),
+            "password": str(entry.get("password", "") or ""),
+            "url": self._sanitize_text(entry.get("url", "")),
+            "notes": self._sanitize_text(entry.get("notes", "")),
+            "category": self._sanitize_text(entry.get("category", "")),
+            "tags": self._sanitize_text(entry.get("tags", "")),
+        }
 
-        enc_meta = document.get("encryption", {})
-        required_enc_keys = {"algorithm", "key_derivation", "iterations", "salt", "nonce"}
-        missing = required_enc_keys - set(enc_meta.keys())
-        if missing:
-            raise ValueError(f"Повреждённый файл: отсутствуют поля шифрования: {missing}")
+    def _sanitize_text(self, value: Any) -> str:
+        text = str(value or "").replace("\x00", "").strip()
+        for pat in self.MALICIOUS_PATTERNS:
+            if pat.search(text):
+                raise ImportValidationError("Imported data contains blocked active content")
+        return text
 
-        if enc_meta.get("algorithm") != "AES-256-GCM":
-            raise ValueError(
-                f"Неподдерживаемый алгоритм: {enc_meta.get('algorithm')}. "
-                "Ожидается AES-256-GCM."
-            )
-
-        # Деривируем ключ
-        export_key = None
+    def _load_native_package(self, package_payload: str | bytes, options: ImportOptions) -> Dict[str, Any]:
+        payload_bytes = self._as_bytes(package_payload)
+        if len(payload_bytes) > max(1, int(options.max_file_size)):
+            raise ValueError("Import file exceeds max size")
         try:
-            salt       = b64decode(enc_meta["salt"])
-            nonce      = b64decode(enc_meta["nonce"])
-            iterations = int(enc_meta.get("iterations", 100_000))
-            ciphertext = b64decode(document["data"])
+            package = NativeJSONFormat().deserialize_header(payload_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
+            raise ImportValidationError("Native export package is invalid JSON") from e
+        NativeJSONFormat().validate_package(package)
+        ciphertext = self._decode_b64(package["data"].get("ciphertext", ""))
+        if checksum(ciphertext) != str(package["integrity"].get("checksum", "")):
+            raise ImportValidationError("Native export checksum mismatch")
+        return package
 
-            export_key = _derive_export_key(password, salt, iterations)
+    def _parse_plaintext_payload(self, payload: str | bytes, options: ImportOptions) -> List[Dict[str, str]]:
+        payload_bytes = self._as_bytes(payload)
+        if len(payload_bytes) > max(1, int(options.max_file_size)):
+            raise ValueError("Import file exceeds max size")
+        text = payload_bytes.decode("utf-8-sig")
+        fmt = str(options.format or "csv").strip().lower()
+        if fmt in {"csv", "cryptosafe_csv"}:
+            return CSVVaultFormat().parse_rows(text)
+        if fmt in {"lastpass", "lastpass_csv"}:
+            return LastPassCSVFormat().parse_entries(text)
+        if fmt in {"bitwarden", "bitwarden_json"}:
+            return BitwardenJSONFormat().parse_entries(text)
+        raise ImportValidationError(f"Unsupported import format: {options.format}")
 
-            # Расшифровываем
-            aesgcm    = AESGCM(export_key)
-            plaintext = aesgcm.decrypt(nonce, ciphertext, None)
-
-        except Exception as e:
-            raise ValueError(
-                f"Не удалось расшифровать файл. "
-                f"Возможно, неверный пароль или повреждённый файл. ({e})"
+    def _decrypt_native_payload(self, package: Dict[str, Any], password: str) -> Dict[str, Any]:
+        enc = package["encryption"]
+        if enc.get("method") == "public_key":
+            plain = decrypt_with_private_key(
+                {
+                    "encrypted_key": package["data"].get("encrypted_key", ""),
+                    "nonce": enc.get("nonce", ""),
+                    "ciphertext": package["data"].get("ciphertext", ""),
+                    "checksum": package["integrity"].get("checksum", ""),
+                },
+                password,
             )
+            return self._decode_native_plaintext(package, plain)
+
+        salt = self._decode_b64(enc.get("salt", ""))
+        nonce = self._decode_b64(enc.get("nonce", ""))
+        ciphertext = self._decode_b64(package["data"].get("ciphertext", ""))
+        bits = 128 if "128" in enc.get("algorithm", "") else 256
+        key = derive_password_key(password, salt, bits=bits, iterations=int(enc.get("iterations", 100000)))
+        keybuf = bytearray(key)
+        try:
+            expected_hmac = str(package["integrity"].get("hmac", ""))
+            if expected_hmac:
+                computed = hmac.new(bytes(keybuf), ciphertext, "sha256").hexdigest()
+                if not hmac.compare_digest(computed, expected_hmac):
+                    raise ImportValidationError("Native export HMAC mismatch")
+            plaintext = decrypt_aes_gcm(ciphertext, keybuf, nonce)
         finally:
-            # Очищаем ключ из памяти 
-            if export_key is not None:
-                export_key = bytes(len(export_key))
-                del export_key
+            wipe_bytes(keybuf)
+        return self._decode_native_plaintext(package, plaintext)
 
-        # Опциональная распаковка GZIP
-        if enc_meta.get("compressed"):
+    def _decode_native_plaintext(self, package: Dict[str, Any], plaintext: bytes) -> Dict[str, Any]:
+        if checksum(plaintext) != str(package["integrity"].get("payload_checksum", "")):
+            raise ImportValidationError("Native export plaintext checksum mismatch")
+        if package.get("metadata", {}).get("compressed"):
             plaintext = gzip.decompress(plaintext)
-
-        # Верификация целостности
-        integrity = document.get("integrity", {})
-        if integrity.get("hash"):
-            computed = hashlib.sha256(plaintext).hexdigest()
-            if computed != integrity["hash"]:
-                raise ValueError(
-                    "Нарушение целостности файла: хэш не совпадает. "
-                    "Файл мог быть повреждён или изменён."
-                )
-
-        payload = json.loads(plaintext.decode("utf-8"))
-        return payload.get("entries", [])
-
-    def _parse_bitwarden(
-        self, filepath: str, password: Optional[str]
-    ) -> List[Dict]:
-        # Парсит Bitwarden JSON export (
-        # Поддерживает незашифрованный формат (encrypted: false).
-        # Тип записи 1 = login.
-        with open(filepath, "r", encoding="utf-8") as f:
-            document = json.load(f)
-
-        if document.get("encrypted"):
-            raise ValueError(
-                "Зашифрованный Bitwarden экспорт не поддерживается. "
-                "Экспортируйте из Bitwarden без шифрования."
-            )
-
-        items = document.get("items", [])
-        entries = []
-
-        for item in items:
-            # Обрабатываем только логины (type=1)
-            if item.get("type") != 1:
-                continue
-
-            login = item.get("login", {})
-            uris  = login.get("uris") or []
-            url   = uris[0].get("uri", "") if uris else ""
-
-            entries.append({
-                "title":    item.get("name", ""),
-                "username": login.get("username", ""),
-                "password": login.get("password", ""),
-                "url":      url,
-                "notes":    item.get("notes", "") or "",
-                "category": item.get("folderId", "") or "",
-                "tags":     "",
-            })
-
-        return entries
-
-    def _parse_lastpass_csv(
-        self, filepath: str, password: Optional[str]
-    ) -> List[Dict]:
-        # Парсит LastPass CSV export 
-        # Стандартный заголовок: url,username,password,extra,name,grouping,fav
-        entries = []
-
-        with open(filepath, "r", encoding="utf-8", newline="") as f:
-            # Пропускаем строки-комментарии
-            lines = [line for line in f if not line.startswith("#")]
-
-        reader = csv.DictReader(io.StringIO("".join(lines)))
-
-        for row in reader:
-            # LastPass использует 'name' как заголовок, 'extra' как заметки
-            # 'grouping' как категорию
-            url = row.get("url", "").strip()
-            # LastPass сохраняет имя сайта как 'name', адрес как 'url'
-            # Если url == 'http://sn' — это secure note, пропускаем
-            if url.lower() in ("http://sn", "https://sn"):
-                continue
-
-            entries.append({
-                "title":    row.get("name", "").strip(),
-                "username": row.get("username", "").strip(),
-                "password": row.get("password", "").strip(),
-                "url":      url,
-                "notes":    row.get("extra", "").strip(),
-                "category": row.get("grouping", "").strip(),
-                "tags":     "",
-            })
-
-        return entries
-
-    def _parse_csv(
-        self, filepath: str, password: Optional[str]
-    ) -> List[Dict]:
-        # Парсит универсальный CSV 
-        # Поддерживает заголовки: title, username, password, url, notes, category, tags.
-        # Нечувствителен к регистру заголовков и порядку колонок.
-        entries = []
-
-        with open(filepath, "r", encoding="utf-8", newline="") as f:
-            # Пропускаем строки-комментарии (начинаются с #)
-            lines = [line for line in f if not line.startswith("#")]
-
-        if not lines:
-            return entries
-
-        reader = csv.DictReader(io.StringIO("".join(lines)))
-
-        # Нормализуем заголовки к нижнему регистру
-        if reader.fieldnames:
-            reader.fieldnames = [h.lower().strip() for h in reader.fieldnames]
-
-        for row in reader:
-            # Поддерживаем альтернативные имена колонок
-            title = (
-                row.get("title") or row.get("name") or
-                row.get("site") or row.get("service") or ""
-            ).strip()
-
-            entries.append({
-                "title":    title,
-                "username": (row.get("username") or row.get("login") or row.get("email") or "").strip(),
-                "password": (row.get("password") or row.get("pass") or "").strip(),
-                "url":      (row.get("url") or row.get("website") or row.get("uri") or "").strip(),
-                "notes":    (row.get("notes") or row.get("note") or row.get("comment") or "").strip(),
-                "category": (row.get("category") or row.get("group") or row.get("folder") or "").strip(),
-                "tags":     (row.get("tags") or row.get("tag") or "").strip(),
-            })
-
-        return entries
-
-    # Вспомогательные методы
-    def _get_existing_fingerprints(self) -> Dict[str, str]:
-        # Получает отпечатки всех существующих записей для дедупликации.
-        # Возвращает словарь fingerprint → entry_id.
-        fingerprints: Dict[str, str] = {}
         try:
-            all_entries = self.entry_manager.get_all_entries()
-            for entry in all_entries:
-                fp = _entry_fingerprint(entry)
-                fingerprints[fp] = entry.get("id", "")
-            # Очищаем расшифрованные данные (SEC-1 Sprint 3)
-            self.entry_manager.secure_wipe_list(all_entries)
-        except Exception:
-            pass
-        return fingerprints
+            decoded = json.loads(plaintext.decode("utf-8"))
+        except Exception as e:
+            raise ImportValidationError("Native export decrypted payload invalid") from e
+        if not isinstance(decoded, dict) or not isinstance(decoded.get("entries"), list):
+            raise ImportValidationError("Native export payload does not contain entries")
+        return decoded
+
+    def _decode_b64(self, value: str) -> bytes:
+        try:
+            return base64.b64decode(str(value).encode("ascii"), validate=True)
+        except Exception as e:
+            raise ImportValidationError("Native export contains invalid base64 data") from e
+
+    def _as_bytes(self, value: str | bytes) -> bytes:
+        return value if isinstance(value, bytes) else str(value).encode("utf-8")
+
+    def _existing_entries_by_identity(self) -> Dict[tuple, Dict[str, Any]]:
+        if not hasattr(self.entry_manager, "get_all_entries"):
+            return {}
+        return {self._identity(e): e for e in self.entry_manager.get_all_entries()}
+
+    def _identity(self, entry: Dict[str, Any]) -> tuple:
+        return (entry.get("title", "").strip().lower(), entry.get("username", "").strip().lower())
+
+    def _apply_entries(self, entries: List[Dict[str, Any]], opts: ImportOptions, start: float) -> ImportResult:
+        result = ImportResult(
+            total_parsed=len(entries),
+            created=0,
+            updated=0,
+            skipped=0,
+            imported=0,
+            mode=opts.mode,
+            dry_run_entries=entries if opts.mode == "dry-run" else [],
+        )
+        if opts.mode == "dry-run":
+            return result
+        if opts.mode == "replace":
+            self._clear_vault()
+        existing = {} if opts.mode == "replace" else self._existing_entries_by_identity()
+        deadline = start + max(1, int(opts.timeout_seconds))
+        for entry in entries:
+            if time.monotonic() > deadline:
+                raise ImportValidationError("Import timed out")
+            ident = self._identity(entry)
+            exist = existing.get(ident)
+            if exist and opts.duplicate_strategy == "skip":
+                result.skipped += 1
+            elif exist and opts.duplicate_strategy == "replace":
+                self.entry_manager.update_entry(exist["id"], entry)
+                result.updated += 1
+            else:
+                created = self.entry_manager.create_entry(entry)
+                existing[ident] = created
+                result.created += 1
+        result.imported = result.created
+        return result
 
     def _clear_vault(self):
-        # Удаляет все записи из хранилища (для режима replace
-        try:
-            all_entries = self.entry_manager.get_all_entries()
-            ids = [e.get("id") for e in all_entries if e.get("id")]
-            self.entry_manager.secure_wipe_list(all_entries)
-            for entry_id in ids:
-                try:
-                    self.entry_manager.delete_entry(entry_id, soft_delete=False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
+        if hasattr(self.entry_manager, "get_all_entries") and hasattr(self.entry_manager, "delete_entry"):
+            for e in list(self.entry_manager.get_all_entries()):
+                self.entry_manager.delete_entry(e["id"], soft_delete=False)
+        elif hasattr(self.entry_manager, "entries"):
+            self.entry_manager.entries = []
 
-    def _record_history(
-        self,
-        operation_type: str,
-        format: str,
-        entry_count: int,
-        filepath: str,
-        file_size: int,
-    ):
-        # Записывает операцию в import_export_history 
-        try:
-            checksum = ""
-            if os.path.exists(filepath):
-                h = hashlib.sha256()
-                with open(filepath, "rb") as f:
-                    for chunk in iter(lambda: f.read(65536), b""):
-                        h.update(chunk)
-                checksum = h.hexdigest()
-
-            self.db.execute(
-                """
-                INSERT INTO import_export_history
-                    (operation_type, format, encryption_used,
-                     entry_count, file_size, file_path, checksum, verified)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    operation_type,
-                    format,
-                    1 if format == "encrypted_json" else 0,
-                    entry_count,
-                    file_size,
-                    Path(filepath).name,
-                    checksum,
-                    1,
-                ),
-                commit=True,
-            )
-        except Exception:
-            pass
-
-    def _log_audit(self, event_type: str, details: Dict[str, Any]):
-        # Логирует операцию в аудит 
-        if not self.audit_logger:
+    def _record_history(self, op, fmt, enc, cnt, size, chk, status, details):
+        if self.database is None:
             return
-        try:
-            self.audit_logger.log_event(
-                event_type=event_type,
-                severity="INFO",
-                source="vault_importer",
-                details=details,
-            )
-        except Exception:
-            pass
+        self.database.add_import_export_history(
+            operation_type=op, format=fmt, encryption_used=enc, entry_count=cnt,
+            file_size=size, checksum=chk, verification_status=status, details=details
+        )
