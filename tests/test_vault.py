@@ -8,11 +8,33 @@ from core.vault.entry_manager import EntryManager
 from core import events
 from core.events import subscribe, unsubscribe
 
+print(DatabasePool)
+print(DatabasePool.__module__)
 
 def test_entry_manager_crud_events(tmp_path):
     db_file = tmp_path / "test.db"
     pool = DatabasePool(str(db_file))
     pool.migrate()
+    with pool.connection() as conn:
+        cur = conn.cursor()
+
+        cur.execute("""
+            SELECT name, type
+            FROM sqlite_master
+            ORDER BY type, name
+        """)
+
+        print("\nSQLITE MASTER")
+        for row in cur.fetchall():
+            print(dict(row))
+
+        cur.execute("PRAGMA index_list('vault_entries')")
+
+        print("\nINDEX LIST")
+        for row in cur.fetchall():
+            print(dict(row))
+    pool.close()
+    pool._fill_pool()
 
     key_storage = KeyStorage(pool)
     # Параметры KDF занижены для скорости тестов (argon2_time=3 вместо 10+)
@@ -82,6 +104,9 @@ def test_vault_entries_indices_created(tmp_path):
     pool.migrate()
 
     with pool.connection() as conn:
+        conn.execute("PRAGMA schema_cache_size=0")
+        conn.execute("PRAGMA optimize")
+
         cur = conn.cursor()
         cur.execute("PRAGMA index_list('vault_entries')")
         indices = {row['name'] for row in cur.fetchall()}

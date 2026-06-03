@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime,timezone
 from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import QTableWidget, QTableWidgetItem, QMenu, QHeaderView, QMessageBox
@@ -45,10 +45,16 @@ class SecureTable(QTableWidget):
             return ""
         try:
             value = updated_at.strip()
-            if value.endswith("Z"):
-                value = value[:-1] + "+00:00"
-            parsed = datetime.fromisoformat(value)
-            return parsed.strftime("%Y-%m-%d %H:%M")
+            # Если нет информации о часовом поясе, считаем, что это UTC
+            if '+' not in value and 'Z' not in value and not value.endswith('+00:00'):
+                # Добавляем UTC
+                dt = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+            else:
+                # Уже есть часовой пояс (Z или +00:00)
+                dt = datetime.fromisoformat(value.replace('Z', '+00:00'))
+            # Преобразуем в локальное время
+            dt_local = dt.astimezone()
+            return dt_local.strftime("%Y-%m-%d %H:%M")
         except Exception:
             return updated_at
 

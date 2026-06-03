@@ -19,13 +19,28 @@ class StateManager:
 
     def lock(self):
         self.session_locked = True
+
+        if self.activity_monitor:
+            try:
+                self.activity_monitor.set_vault_locked_state(True)
+            except Exception:
+                pass
+
         if self.key_manager:
             self.key_manager.lock()
+
         if self._event_bus:
             self._event_bus.publish("VaultLocked", reason="manual")
 
     def unlock(self):
         self.session_locked = False
+
+        if self.activity_monitor:
+            try:
+                self.activity_monitor.set_vault_locked_state(False)
+            except Exception:
+                pass
+
         if self._event_bus:
             self._event_bus.publish("VaultUnlocked")
 
@@ -61,3 +76,6 @@ class StateManager:
     def _clear_clipboard(self):
         self._clipboard_value = None
         self._clipboard_timer = None
+        
+    def get_inactivity_timeout(self):
+        return self.config.get_preference("inactivity_timeout") or 300
