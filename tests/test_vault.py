@@ -7,6 +7,7 @@ from core.key_manager import KeyManager
 from core.vault.entry_manager import EntryManager
 from core import events
 from core.events import subscribe, unsubscribe
+import datetime
 
 print(DatabasePool)
 print(DatabasePool.__module__)
@@ -253,3 +254,36 @@ def test_encryption_cycle(tmp_path):
     # version и id должны проставляться автоматически при создании
     assert decrypted["version"] == 1
     assert decrypted["id"]      == entry_id
+    
+def test_search_entries_anonymized_logging(tmp_path):
+    from database.db import DatabasePool
+    from core.crypto.key_storage import KeyStorage
+    from core.key_manager import KeyManager
+    from core.vault.entry_manager import EntryManager
+    from core.events import subscribe
+
+    db_file = tmp_path / "test.db"
+    pool = DatabasePool(str(db_file))
+    pool.migrate()
+    key_storage = KeyStorage(pool)
+    key_manager = KeyManager(key_storage, {
+        "argon2_time": 3,
+        "argon2_memory": 65536,
+        "argon2_parallelism": 4,
+        "pbkdf2_iterations": 100000,
+    })
+    key_manager.initialize("StrongPass123!")
+    key_manager.unlock("StrongPass123!")
+    entry_manager = EntryManager(pool, key_manager)
+    entry_manager.create_entry({"title": "MyBank", "username": "user"})
+
+    captured = []
+    def handler(**kw):
+        captured.append(kw)
+    subscribe("VaultSearched", handler)
+    captured.clear()
+    entry_manager.invalidate_search_cache()   # очищаем кэш
+    results = entry_manager.search_entries("bank")
+    assert len(results) == 1
+    assert captured[-1]["query"] == "[REDACTED]"
+    assert captured[-1]["query_length"] == 4

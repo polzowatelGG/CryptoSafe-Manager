@@ -295,7 +295,7 @@ class MainWindow(QMainWindow):
         """Безопасный вызов методов ActivityMonitor — разные версии имеют разные имена."""
         if not self.activity_monitor:
             return
-        # FIX #10: пробуем все возможные имена метода
+    
         for method_name in ("record_activity", "reset_activity", "update_activity"):
             method = getattr(self.activity_monitor, method_name, None)
             if callable(method):
@@ -538,7 +538,7 @@ class MainWindow(QMainWindow):
         clear_clip.triggered.connect(self._on_tray_clear_clipboard)
         tray_menu.addAction(clear_clip)
 
-        # FIX #9: быстрый поиск теперь вызывает _on_search вместо _on_search_changed
+          #9: быстрый поиск теперь вызывает _on_search вместо _on_search_changed
         search_action = QAction("🔍 Быстрый поиск", self)
         search_action.triggered.connect(self._on_tray_quick_search)
         tray_menu.addAction(search_action)
@@ -569,7 +569,7 @@ class MainWindow(QMainWindow):
         if ok and text:
             self.search_input.setText(text)
             self._bring_to_front()
-            self._on_search(text)   # FIX: правильное имя метода
+            self._on_search(text)    
 
     def _on_tray_activated(self, reason):
         if reason == QSystemTrayIcon.ActivationReason.DoubleClick:
@@ -636,7 +636,7 @@ class MainWindow(QMainWindow):
                 self.hide()
 
             if self.activity_monitor:
-                # FIX #10: используем безопасный враппер
+                  #10: используем безопасный враппер
                 self._record_activity_monitor()
 
             self._rebuild_tray_menu()
@@ -966,7 +966,7 @@ class MainWindow(QMainWindow):
         notes_edit = QTextEdit()
         notes_edit.setMaximumHeight(80)
 
-        # FIX #1: strength_indicator.update_strength обновляет виджет (не возвращает tuple)
+          #1: strength_indicator.update_strength обновляет виджет (не возвращает tuple)
         strength_indicator = PasswordStrengthIndicator()
         show_pass_btn = QPushButton("👁")
         show_pass_btn.setCheckable(True)
@@ -1234,7 +1234,7 @@ class MainWindow(QMainWindow):
         )
 
     def _on_open_vault(self):
-        # FIX #3: self.config теперь существует
+          #3: self.config теперь существует
         path, _ = QFileDialog.getOpenFileName(
             self, "Открыть хранилище", "",
             "Database Files (*.db);;All Files (*)",
@@ -1253,7 +1253,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть хранилище: {e}")
 
     def _on_backup_vault(self):
-        # FIX #4: self.config теперь существует
+          #4: self.config теперь существует
         try:
             from pathlib import Path
             import shutil
@@ -1288,7 +1288,7 @@ class MainWindow(QMainWindow):
     # =========================================================================
 
     def _show_audit_log(self):
-        # FIX #5: используем self.db_pool (не self.audit_logger) для AuditLogViewer
+          #5: используем self.db_pool (не self.audit_logger) для AuditLogViewer
         try:
             pool = self.db_pool or (
                 getattr(self.entry_manager, "db", None) if self.entry_manager else None
@@ -1303,7 +1303,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось открыть журнал аудита: {e}")
 
     def _on_verify_integrity(self):
-        # FIX #7: используем self.log_verifier, а не self.audit_logger
+          #7: используем self.log_verifier, а не self.audit_logger
         try:
             verifier = self.log_verifier
             if not verifier:
@@ -1325,7 +1325,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось проверить целостность логов: {e}")
 
     def _on_change_password(self):
-        # FIX #8: ChangePasswordDialog принимает key_manager и entry_manager, не authenticator
+          #8: ChangePasswordDialog принимает key_manager и entry_manager, не authenticator
         try:
             from gui.change_password_dialog import ChangePasswordDialog
             dlg = ChangePasswordDialog(

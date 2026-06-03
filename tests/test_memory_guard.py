@@ -39,3 +39,23 @@ def test_secret_holder_auto_cleanup():
     gc.collect()
     # Если мы здесь, то очистка прошла успешно
     assert True
+
+def test_secure_wipe_str_obliterates():
+    """secure_wipe_str должна перезаписывать строку в памяти."""
+    from src.core.security.side_channel_protection import secure_wipe_str
+    s = "super_secret_password_12345"
+    # Просто проверяем, что вызов не падает (реальная проверка требует доступа к памяти)
+    try:
+        secure_wipe_str(s)
+    except Exception:
+        pytest.fail("secure_wipe_str raised exception")
+    # Если дошли сюда – успех
+
+def test_secure_context_manager():
+    """SecureContext должен затирать bytearray при выходе."""
+    from src.core.security.side_channel_protection import SecureContext
+    data = bytearray(b"sensitive")
+    with SecureContext(data) as buf:
+        assert buf == data
+    # После выхода данные должны быть занулены
+    assert all(b == 0 for b in data)

@@ -186,3 +186,37 @@ def test_concurrent_record_activity():
 
     assert not errors, f"Ошибки при конкурентном record_activity: {errors}"
     assert len(locked) == 0, "Блокировка не должна наступить при активной работе"
+    
+def test_auto_lock_disabled_when_timeout_zero():
+    """Таймаут 0 должен отключать автоблокировку."""
+    mon, locked = _make_monitor(0.0)
+    mon.start_monitoring()
+    time.sleep(0.5)
+    mon.stop_monitoring()
+    assert len(locked) == 0
+
+def test_record_activity_ignored_when_locked():
+    """record_activity не сбрасывает таймер, если vault заблокирован."""
+    TIMEOUT = 0.3
+    mon, locked = _make_monitor(TIMEOUT)
+    mon.set_vault_locked_state(True)
+    mon.start_monitoring()
+    mon.record_activity()  # должен игнорироваться
+    time.sleep(TIMEOUT - 0.1)
+    # Блокировка всё равно должна произойти, т.к. активность не засчитана
+    time.sleep(0.2)
+    mon.stop_monitoring()
+    assert len(locked) >= 1
+    
+def test_set_vault_locked_state_updates_internal_flag():
+    mon, _ = _make_monitor(10.0)
+    assert mon.is_vault_locked is False
+    mon.set_vault_locked_state(True)
+    assert mon.is_vault_locked is True
+    mon.set_vault_locked_state(False)
+    assert mon.is_vault_locked is False
+
+def test_update_config_changes_timeout():
+    mon, _ = _make_monitor(10.0)
+    mon.update_config({'inactivity_timeout': 5.0})
+    assert mon.config['inactivity_timeout'] == 5.0

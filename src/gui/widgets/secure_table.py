@@ -285,7 +285,7 @@ class SecureTable(QTableWidget):
         msg.exec()
 
     def clear_entries(self):
-        # FIX: SEC-1 Sprint 3 - Clear memory when clearing table
+
         for entry in self.entries:
             for key in entry.keys():
                 entry[key] = None
@@ -314,7 +314,7 @@ class SecureTable(QTableWidget):
         self.entries = [e for e in self.entries if e.get("id") != entry_id]
 
     def filter_entries(self, search_text: str):
-        # FIX: Performance warning for large datasets (Sprint 3 PERF)
+
         if len(self.entries) > 500 and not self._search_in_progress:
             self._search_in_progress = True
             QMessageBox.information(self, "Поиск", f"Выполняется поиск среди {len(self.entries)} записей...")

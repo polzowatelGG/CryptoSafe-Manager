@@ -232,3 +232,26 @@ def test_panic_without_dependencies():
     panic = _make_panic()
     panic.activate(method="hotkey")
     assert panic.activated is False
+
+def test_panic_wipe_memory():
+    """PanicMode должен затереть содержимое конфига."""
+    config = {"stealth_mode": False, "secret_key": "sensitive"}
+    key_manager = MagicMock()
+    state_manager = MagicMock()
+    clipboard_service = MagicMock()
+    panic = PanicMode(config, key_manager, state_manager, clipboard_service)
+    panic.activate(method="test")
+    # Проверяем, что конфиг очищен (стал пустым или значения обнулены)
+    assert config == {} or config.get("secret_key") is None
+
+def test_panic_stealth_mode_fake_error():
+    """Stealth mode не должен падать при отсутствии Qt (или должен логировать ошибку)."""
+    config = {
+        "stealth_mode": True,
+        "stealth_actions": {"show_fake_error": True, "launch_decoy": False}
+    }
+    panic = PanicMode(config)
+    try:
+        panic.activate(method="stealth")
+    except Exception as e:
+        pytest.fail(f"Stealth mode raised exception: {e}")
