@@ -153,7 +153,7 @@ class MainWindow(QMainWindow):
         self._start_clipboard_timer()
 
         # Хоткей паники
-        self._panic_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Escape"), self)
+        self._panic_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
         self._panic_shortcut.activated.connect(self._on_panic_activate)
 
         events.subscribe("UserLoggedIn",       self._on_user_logged_in)
@@ -455,7 +455,7 @@ class MainWindow(QMainWindow):
         security_menu.addAction(preview_action)
 
         security_menu.addSeparator()
-        panic_action = QAction("🚨 Активировать панику (Ctrl+Shift+Esc)", self)
+        panic_action = QAction("🚨 Активировать панику (Ctrl+Shift+Q)", self)
         panic_action.triggered.connect(self._on_panic_activate)
         security_menu.addAction(panic_action)
 

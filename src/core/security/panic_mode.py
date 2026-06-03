@@ -166,27 +166,26 @@ class PanicMode:
             self._launch_decoy_app()
 
     def _show_fake_error(self):
-        """Show fake crash error message using PyQt6 to avoid Tkinter thread collisions."""
-        if self.main_window:
-            try:
-                from PyQt6.QtWidgets import QMessageBox
-                from PyQt6.QtCore import QMetaObject, Qt
-                
-                # Лямбда для безопасного вызова MessageBox из GUI-потока
-                def invoke_box():
-                    msg = QMessageBox()
-                    msg.setIcon(QMessageBox.Icon.Critical)
-                    msg.setText("Application Error")
-                    msg.InformativeText("The application has encountered an unhandled exception (0xc0000005) and must close.")
-                    msg.setWindowTitle("Runtime Error")
-                    msg.exec()
-
-                QMetaObject.invokeMethod(
-                    self.main_window, invoke_box,
-                    Qt.ConnectionType.QueuedConnection
+        """Show fake crash error message."""
+        try:
+            from PyQt6.QtWidgets import QMessageBox
+            from PyQt6.QtCore import QTimer
+    
+            def _do_show():
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Icon.Critical)
+                msg.setText("Application Error")
+                msg.setInformativeText(
+                    "The application has encountered an unhandled exception "
+                    "(0xc0000005) and must close."
                 )
-            except Exception:
-                pass
+                msg.setWindowTitle("Runtime Error")
+                msg.exec()
+    
+            QTimer.singleShot(0, _do_show)
+        except Exception:
+            pass
+
 
     def _launch_decoy_app(self):
         """Launch a harmless decoy application depending on the operating system."""

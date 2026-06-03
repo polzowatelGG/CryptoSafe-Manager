@@ -1,4 +1,3 @@
-
 import re
 import base64
 import gzip
@@ -7,12 +6,13 @@ import json
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List
 
 from .crypto import checksum, decrypt_aes_gcm, decrypt_with_private_key, derive_password_key, wipe_bytes
 from .exceptions import ImportValidationError
 from .formats import BitwardenJSONFormat, CSVVaultFormat, LastPassCSVFormat, NativeJSONFormat
 from .models import ImportOptions
+import hashlib
 
 
 @dataclass
@@ -66,6 +66,9 @@ class VaultImporter:
         re.compile(r"<\s*iframe", re.IGNORECASE),
     )
 
+    # URL-маркер Secure Notes в LastPass — эти записи не импортируем
+    _LASTPASS_SECURE_NOTE_URLS = {"http://sn", "https://sn", "http://sn/", "https://sn/"}
+
     def __init__(self, entry_manager, key_manager=None, database=None, db=None, event_bus=None):
         self.entry_manager = entry_manager
         self.key_manager = key_manager
@@ -84,9 +87,11 @@ class VaultImporter:
     ) -> Dict[str, Any]:
         if not filepath:
             raise ValueError("File path is required")
+
         fmt = format or "auto"
         if fmt == "auto":
             fmt = _detect_format(filepath)
+
         opts = ImportOptions(
             format=fmt,
             mode=_normalize_mode(mode),
@@ -94,15 +99,28 @@ class VaultImporter:
             max_file_size=max_file_size,
             timeout_seconds=timeout_seconds,
         )
+
         payload = Path(filepath).read_bytes()
+
+        # FIX: проверка размера с русским сообщением (тест ожидает "слишком большой")
+        if len(payload) > max_file_size:
+            mb = len(payload) // 1024 // 1024
+            max_mb = max_file_size // 1024 // 1024
+            raise ValueError(
+                f"Файл слишком большой: {mb} МБ. Максимум: {max_mb} МБ."
+            )
+
         if fmt == "encrypted_json":
             if not password:
                 raise ValueError("Password required for encrypted_json import")
             return self.import_encrypted_json(payload, password, opts)
+
         if fmt in {"csv", "cryptosafe_csv", "lastpass", "lastpass_csv", "bitwarden", "bitwarden_json"}:
             return self.import_plaintext(payload, opts)
+
         if fmt == "bitwarden_encrypted":
             raise ImportValidationError("Encrypted Bitwarden import is not supported yet")
+
         raise ImportValidationError(f"Unsupported import format: {fmt}")
 
     def validate_entries(self, entries, options=None):
@@ -112,11 +130,10 @@ class VaultImporter:
             normalized = self._sanitize_entry(entry)
             if not normalized["title"]:
                 raise ImportValidationError(f"Entry #{idx} missing title")
-            # Пароль необязателен — пропускаем пустые записи вместо падения
             validated.append(normalized)
         return validated
 
-    def preview_encrypted_json(self, package_payload: str | bytes, password: str, options: ImportOptions | None = None) -> List[Dict[str, Any]]:
+    def preview_encrypted_json(self, package_payload: str | bytes, password: str, options: ImportOptions | None = None) -> list:
         opts = options or ImportOptions(format="encrypted_json")
         package = self._load_native_package(package_payload, opts)
         plaintext = self._decrypt_native_payload(package, password)
@@ -167,7 +184,7 @@ class VaultImporter:
             len(self._as_bytes(package_payload)), "applied", "verified", result.__dict__)
         return result
 
-    def preview_plaintext(self, payload: str | bytes, options: ImportOptions | None = None) -> List[Dict[str, Any]]:
+    def preview_plaintext(self, payload: str | bytes, options: ImportOptions | None = None) -> list:
         opts = options or ImportOptions(format="csv")
         raw_entries = self._parse_plaintext_payload(payload, opts)
         return self.validate_entries(raw_entries, opts)
@@ -179,19 +196,21 @@ class VaultImporter:
         result = self._apply_entries(entries, opts, start)
         self._record_history(
             "import", opts.format, "none", len(entries), len(self._as_bytes(payload)),
-            checksum(self._as_bytes(payload)), "validated" if opts.mode == "dry-run" else "verified", result.__dict__ if isinstance(result, ImportResult) else result
+            checksum(self._as_bytes(payload)),
+            "validated" if opts.mode == "dry-run" else "verified",
+            result.__dict__ if isinstance(result, ImportResult) else result
         )
         return result
 
     def _sanitize_entry(self, entry: Dict[str, Any]) -> Dict[str, str]:
         return {
-            "title": self._sanitize_text(entry.get("title", "")),
+            "title":    self._sanitize_text(entry.get("title", "")),
             "username": self._sanitize_text(entry.get("username", "")),
             "password": str(entry.get("password", "") or ""),
-            "url": self._sanitize_text(entry.get("url", "")),
-            "notes": self._sanitize_text(entry.get("notes", "")),
+            "url":      self._sanitize_text(entry.get("url", "")),
+            "notes":    self._sanitize_text(entry.get("notes", "")),
             "category": self._sanitize_text(entry.get("category", "")),
-            "tags": self._sanitize_text(entry.get("tags", "")),
+            "tags":     self._sanitize_text(entry.get("tags", "")),
         }
 
     def _sanitize_text(self, value: Any) -> str:
@@ -203,8 +222,10 @@ class VaultImporter:
 
     def _load_native_package(self, package_payload: str | bytes, options: ImportOptions) -> Dict[str, Any]:
         payload_bytes = self._as_bytes(package_payload)
+        # FIX: русское сообщение об ошибке размера
         if len(payload_bytes) > max(1, int(options.max_file_size)):
-            raise ValueError("Import file exceeds max size")
+            mb = len(payload_bytes) // 1024 // 1024
+            raise ValueError(f"Файл слишком большой: {mb} МБ.")
         try:
             package = NativeJSONFormat().deserialize_header(payload_bytes.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as e:
@@ -215,16 +236,24 @@ class VaultImporter:
             raise ImportValidationError("Native export checksum mismatch")
         return package
 
-    def _parse_plaintext_payload(self, payload: str | bytes, options: ImportOptions) -> List[Dict[str, str]]:
+    def _parse_plaintext_payload(self, payload: str | bytes, options: ImportOptions) -> list:
         payload_bytes = self._as_bytes(payload)
+        # FIX: русское сообщение об ошибке размера
         if len(payload_bytes) > max(1, int(options.max_file_size)):
-            raise ValueError("Import file exceeds max size")
+            mb = len(payload_bytes) // 1024 // 1024
+            raise ValueError(f"Файл слишком большой: {mb} МБ.")
         text = payload_bytes.decode("utf-8-sig")
         fmt = str(options.format or "csv").strip().lower()
         if fmt in {"csv", "cryptosafe_csv"}:
             return CSVVaultFormat().parse_rows(text)
         if fmt in {"lastpass", "lastpass_csv"}:
-            return LastPassCSVFormat().parse_entries(text)
+            # FIX: фильтруем Secure Notes (url == "http://sn") ПОСЛЕ парсинга
+            raw = LastPassCSVFormat().parse_entries(text)
+            return [
+                e for e in raw
+                if str(e.get("url", "")).lower().rstrip("/") not in
+                   {"http://sn", "https://sn"}
+            ]
         if fmt in {"bitwarden", "bitwarden_json"}:
             return BitwardenJSONFormat().parse_entries(text)
         raise ImportValidationError(f"Unsupported import format: {options.format}")
@@ -288,9 +317,12 @@ class VaultImporter:
         return {self._identity(e): e for e in self.entry_manager.get_all_entries()}
 
     def _identity(self, entry: Dict[str, Any]) -> tuple:
-        return (entry.get("title", "").strip().lower(), entry.get("username", "").strip().lower())
+        return (
+            entry.get("title", "").strip().lower(),
+            entry.get("username", "").strip().lower(),
+        )
 
-    def _apply_entries(self, entries: List[Dict[str, Any]], opts: ImportOptions, start: float) -> ImportResult:
+    def _apply_entries(self, entries: list, opts: ImportOptions, start: float) -> ImportResult:
         result = ImportResult(
             total_parsed=len(entries),
             created=0,

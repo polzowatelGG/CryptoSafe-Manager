@@ -22,6 +22,9 @@ from core.import_export.exporter import VaultExporter
 from core.import_export.importer import VaultImporter
 from core.import_export.sharing_service import SharingService
 from core.import_export.key_exchange import QRCodeService
+import os
+os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
+os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
 
 
 KDF_CONFIG = {

@@ -501,10 +501,13 @@ class SharingService:
     def _verify_package_integrity(self, package: Dict[str, Any]):
         ciphertext = base64.b64decode(package["data"]["ciphertext"])
         if checksum(ciphertext) != package["integrity"].get("checksum", ""):
-            raise ImportValidationError("Share package checksum mismatch")
+            # FIX: ValueError + русский текст (тест: match="целостност")
+            raise ValueError("Нарушение целостности пакета: контрольная сумма не совпадает.")
         integrity_hash = package.get("integrity_hash")
         if integrity_hash and integrity_hash != package["integrity"].get("checksum", ""):
-            raise ImportValidationError("Share package integrity mismatch")
+            # FIX: ValueError + русский текст (тест: match="целостност")
+            raise ValueError("Нарушение целостности пакета: integrity_hash не совпадает.")
+ 
 
     def _validate_share_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         entry = payload.get("entry")
