@@ -132,8 +132,8 @@ class MainWindow(QMainWindow):
         self.qr_service       = qr_service
         self.activity_monitor = activity_monitor
         self.panic_mode       = panic_mode
-        self.config           = config        # FIX #2,3,4: теперь хранится явно
-        self.audit_logger     = audit_logger  # FIX #5,6,7: теперь хранится явно
+        self.config           = config        
+        self.audit_logger     = audit_logger  
         self.db_pool          = db_pool
 
         self._minimize_to_tray  = True
