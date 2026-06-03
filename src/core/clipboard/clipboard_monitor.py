@@ -1,7 +1,6 @@
 # clipboard_monitor.py
 # Мониторинг буфера обмена на изменения извне.
 #
-# FIX: на Linux get_change_count() всегда возвращает 0 (pyperclip не
 # поддерживает счётчик). Используем резервный механизм — сравниваем
 # хэш содержимого буфера, чтобы мониторинг работал на всех платформах.
 
@@ -21,7 +20,7 @@ class ClipboardMonitor:
         # Счётчик последней «своей» записи (macOS/Windows)
         self._own_change_count: Optional[int] = None
 
-        # FIX: резервный механизм для Linux — хэш содержимого
+
         self._use_hash_fallback = False
         self._own_content_hash:  Optional[str] = None
 

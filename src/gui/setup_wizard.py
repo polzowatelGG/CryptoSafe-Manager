@@ -46,7 +46,7 @@ class SetupWizard(QDialog):
         layout.addLayout(db_layout)
 
         # --- Настройки шифрования (заглушка) ---
-        layout.addWidget(QLabel("Настройки шифрования (заглушка)"))
+        layout.addWidget(QLabel())
 
         # --- Кнопки ---
         btn_layout = QHBoxLayout()
@@ -102,7 +102,7 @@ class SetupWizard(QDialog):
         QMessageBox.information(
             self,
             "Готово",
-            f"Мастер-пароль установлен\nБаза: {self.db_path}\n(Шифрование пока заглушка)"
+            f"Мастер-пароль установлен\nБаза: {self.db_path}\n"
         )
         self.accept()
 

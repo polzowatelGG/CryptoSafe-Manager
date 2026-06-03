@@ -102,7 +102,7 @@ class VaultImporter:
 
         payload = Path(filepath).read_bytes()
 
-        # FIX: проверка размера с русским сообщением (тест ожидает "слишком большой")
+
         if len(payload) > max_file_size:
             mb = len(payload) // 1024 // 1024
             max_mb = max_file_size // 1024 // 1024
@@ -222,7 +222,7 @@ class VaultImporter:
 
     def _load_native_package(self, package_payload: str | bytes, options: ImportOptions) -> Dict[str, Any]:
         payload_bytes = self._as_bytes(package_payload)
-        # FIX: русское сообщение об ошибке размера
+
         if len(payload_bytes) > max(1, int(options.max_file_size)):
             mb = len(payload_bytes) // 1024 // 1024
             raise ValueError(f"Файл слишком большой: {mb} МБ.")
@@ -238,7 +238,7 @@ class VaultImporter:
 
     def _parse_plaintext_payload(self, payload: str | bytes, options: ImportOptions) -> list:
         payload_bytes = self._as_bytes(payload)
-        # FIX: русское сообщение об ошибке размера
+
         if len(payload_bytes) > max(1, int(options.max_file_size)):
             mb = len(payload_bytes) // 1024 // 1024
             raise ValueError(f"Файл слишком большой: {mb} МБ.")
@@ -247,7 +247,7 @@ class VaultImporter:
         if fmt in {"csv", "cryptosafe_csv"}:
             return CSVVaultFormat().parse_rows(text)
         if fmt in {"lastpass", "lastpass_csv"}:
-            # FIX: фильтруем Secure Notes (url == "http://sn") ПОСЛЕ парсинга
+
             raw = LastPassCSVFormat().parse_entries(text)
             return [
                 e for e in raw

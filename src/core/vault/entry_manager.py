@@ -137,7 +137,7 @@ class EntryManager:
         except Exception:
             pass
 
-        # FIX: если есть повреждённые — публикуем предупреждение
+
         if corrupted:
             try:
                 self.events.publish(

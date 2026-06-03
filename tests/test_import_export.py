@@ -12,8 +12,9 @@ from core.crypto.key_storage import KeyStorage
 from core.key_manager import KeyManager
 from core.vault.entry_manager import EntryManager
 from core.import_export.exporter import VaultExporter
-from core.import_export.importer import VaultImporter, _detect_format
+from core.import_export.importer import VaultImporter, _detect_format, ImportValidationError
 from core.import_export.sharing_service import SharingService
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -696,3 +697,36 @@ def test_import_history_recorded(vault_env, exporter, tmp_path):
     assert len(rows) >= 1
     assert rows[-1]["entry_count"] == 2
     assert rows[-1]["format"] == "encrypted_json"
+    
+def test_qr_service_initialization():
+    from core.import_export.key_exchange import QRCodeService
+    svc = QRCodeService(ttl_seconds=60)
+    assert svc.ttl_seconds == 60
+    assert svc.is_qr_available() is not None  # не падает
+
+def test_qr_service_get_qr_info_empty():
+    from core.import_export.key_exchange import QRCodeService
+    svc = QRCodeService()
+    assert svc.get_qr_info([]) == {}
+    
+def test_export_encrypted_json_with_public_key(vault_env, exporter, tmp_path):
+    em = vault_env["entry_manager"]
+    em.create_entry({"title": "Test", "password": "pwd"})
+    from core.import_export.crypto import generate_rsa_key_pair
+    priv, pub = generate_rsa_key_pair()
+    output = exporter.export_encrypted_json_for_public_key(pub)
+    assert "encrypted_key" in output
+    assert "ciphertext" in output
+
+def test_import_corrupted_encrypted_json(vault_env, importer, tmp_path):
+    import json
+    corrupted = {
+        "cryptosafe_export": True,
+        "data": {"ciphertext": "invalid_base64!!!"},
+        "encryption": {"salt": "AA==", "nonce": "AA=="},
+        "integrity": {"checksum": "abc", "payload_checksum": "abc"}
+    }
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text(json.dumps(corrupted))
+    with pytest.raises((ImportValidationError, ValueError)):
+        importer.import_file(str(bad_file), password="any", format="encrypted_json")

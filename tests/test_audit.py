@@ -507,3 +507,72 @@ def test_security_sql_injection_and_tampering(audit_env):
         # Восстанавливаем состояние для чистоты — другие тесты в сессии
         # не должны получить заблокированный key_manager.
         audit_env["km"].unlock("AuditTestPass123!")
+        
+def test_audit_logger_sanitize_details(audit_env):
+    logger = audit_env["logger"]
+    details = {
+        "password": "secret123",
+        "api_key": "abc-123",
+        "normal": "visible",
+        "nested": {"token": "xyz"}
+    }
+    sanitized = logger._sanitize_details(details)
+    assert sanitized["password"] == "[REDACTED]"
+    assert sanitized["api_key"] == "[REDACTED]"
+    assert sanitized["normal"] == "visible"
+    assert sanitized["nested"]["token"] == "[REDACTED]"
+
+def test_audit_log_verify_last_n(audit_env):
+    logger = audit_env["logger"]
+    verifier = audit_env["verifier"]
+    for i in range(1500):
+        logger.log_event("PERF_TEST", "INFO", "test", {"idx": i})
+    result = verifier._verify_last_n(n=1000)
+    assert result["valid_entries"] == 1000
+    assert result["total_entries"] == 1000
+    assert result["verified"] is True
+    
+def test_export_csv_formatter(audit_env, tmp_path):
+    logger = audit_env["logger"]
+    formatter = audit_env["formatter"]
+    # Не удаляем genesis, просто добавляем 5 записей
+    for i in range(5):
+        logger.log_event("TEST", "INFO", "src", {"i": i})
+    csv_path = tmp_path / "audit.csv"
+    count = formatter.export_csv(str(csv_path), password="AuditTestPass123!")
+    # 1 genesis + 5 новых = 6
+    assert count == 6
+    assert csv_path.exists()
+    
+def test_verify_last_n_edge_cases(audit_env):
+    logger = audit_env["logger"]
+    verifier = audit_env["verifier"]
+    pool = audit_env["pool"]
+    # Очищаем таблицу полностью
+    pool.execute("DELETE FROM audit_log", commit=True)
+    # Создаём genesis заново
+    logger._ensure_genesis()
+    for i in range(5):
+        logger.log_event("TEST", "INFO", "test", {"i": i})
+    result = verifier._verify_last_n(n=10)
+    # 1 genesis + 5 = 6
+    assert result["total_entries"] == 6
+    result = verifier._verify_last_n(n=0)
+    assert result["total_entries"] == 0
+    
+def test_export_pdf_formatter(audit_env, tmp_path):
+    logger = audit_env["logger"]
+    formatter = audit_env["formatter"]
+    pool = audit_env["pool"]
+    pool.execute("DELETE FROM audit_log", commit=True)
+    logger._ensure_genesis()
+    for i in range(3):
+        logger.log_event("PDF_TEST", "INFO", "src", {"i": i})
+    pdf_path = tmp_path / "audit.pdf"
+    try:
+        count = formatter.export_pdf(str(pdf_path), password="AuditTestPass123!")
+        # 1 genesis + 3 = 4
+        assert count == 4
+        assert pdf_path.exists()
+    except ImportError:
+        pytest.skip("reportlab not installed")

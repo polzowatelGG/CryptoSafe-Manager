@@ -10,6 +10,8 @@ from core.clipboard.platform_adapter import get_platform_clipboard_adapter as ge
 from core.clipboard.clipboard_service import ClipboardService, SecureClipboardItem
 import tempfile
 import os
+from unittest.mock import Mock
+from core.clipboard.platform_adapter import PyperclipAdapter
 
 class DummyPlatform:
     def copy_to_clipboard(self, data): return True
@@ -507,3 +509,25 @@ def test_recovery_timer_after_manual_clear():
     assert svc.get_clipboard_status()['active'] is False, (
         "Буфер стал активным после ручной очистки — ошибка в логике operation_id"
     )
+    
+def test_clipboard_monitor_hash_fallback_detection():
+    from src.core.clipboard.clipboard_monitor import ClipboardMonitor
+    from src.core.clipboard.platform_adapter import PyperclipAdapter
+    adapter = PyperclipAdapter()
+    service = ClipboardService(adapter, DummyEvents(), DummyConfig(), DummyState())
+    monitor = ClipboardMonitor(service, adapter)
+    # PyperclipAdapter всегда возвращает 0, поэтому fallback должен включиться
+    assert monitor._detect_hash_fallback() is True
+
+def test_linux_adapter_change_count_always_zero():
+    from src.core.clipboard.platform_adapter import LinuxPlatformClipboardAdapter
+    adapter = LinuxPlatformClipboardAdapter()
+    assert adapter.get_change_count() == 0
+    
+def test_pyperclip_adapter_copy_clear():
+    from core.clipboard.platform_adapter import PyperclipAdapter
+    adapter = PyperclipAdapter()
+    assert adapter.copy_to_clipboard("test") is True
+    assert adapter.get_clipboard_content() == "test"
+    assert adapter.clear_clipboard() is True
+    assert adapter.get_clipboard_content() == ""  # или None

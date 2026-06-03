@@ -77,7 +77,6 @@ class ConfigManager: # класс ConfigManager, который отвечает
         self.save()
         
     def get(self, key: str, default=None):
-        # FIXединый метод get() для совместимости 
         # Проверяем preferences, затем top-level ключи
         pref = self.config.get("preferences", {}).get(key)
         if pref is not None:
