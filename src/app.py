@@ -200,7 +200,10 @@ def main():
         importer=importer,
         sharing_service=sharing_service,
         qr_service=qr_service,
+        config=config,       
+        db_pool=pool,        
     )
+    
     clipboard_service.subscribe(window.show_toast)
     window._config = config
     window.show()
