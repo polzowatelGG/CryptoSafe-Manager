@@ -23,8 +23,9 @@ from core.import_export.importer import VaultImporter
 from core.import_export.sharing_service import SharingService
 from core.import_export.key_exchange import QRCodeService
 import os
-os.environ.setdefault("QT_ENABLE_HIGHDPI_SCALING", "1")
-os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
+import sys
+if sys.platform == "win32":
+    os.environ.setdefault("QT_QPA_PLATFORM", "windows:fontengine=freetype")
 
 
 KDF_CONFIG = {
@@ -59,6 +60,7 @@ def main():
     app = QApplication(sys.argv)
     config = ConfigManager()
     event_bus = EventBus()
+    app.setQuitOnLastWindowClosed(False)
 
     # ------------------------------------------------------------------ #
     # Шаг 1: выбор / создание хранилища

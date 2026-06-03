@@ -29,14 +29,11 @@ class DatabasePool:
         conn = sqlite3.connect(
             self.db_path,
             check_same_thread=False,
-            timeout=30,          # FIX: таймаут вместо немедленной ошибки при lock
+            timeout=30,
         )
         conn.row_factory = sqlite3.Row
-        # FIX: WAL предотвращает повреждение при параллельных записях и сбоях
         conn.execute("PRAGMA journal_mode=WAL")
-        # FIX: fsync после каждого commit — защита от повреждения при сбое питания
         conn.execute("PRAGMA synchronous=NORMAL")
-        # FIX: включаем проверку внешних ключей
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
 
@@ -45,7 +42,6 @@ class DatabasePool:
             self._pool.put(self.new_connection())
 
     def check_integrity(self) -> bool:
-        """FIX: проверка целостности БД — вызывается при старте приложения."""
         try:
             with self.connection() as conn:
                 row = conn.execute("PRAGMA integrity_check").fetchone()
@@ -58,11 +54,6 @@ class DatabasePool:
             return False
 
     def try_recover(self) -> bool:
-        """
-        FIX: попытка восстановления повреждённой БД через VACUUM INTO.
-        Создаёт исправную копию рядом с оригиналом.
-        Возвращает True если восстановление удалось.
-        """
         backup_path = self.db_path.with_suffix(".recovered.db")
         try:
             with self.connection() as conn:
@@ -85,8 +76,6 @@ class DatabasePool:
         try:
             yield conn
         except sqlite3.DatabaseError as e:
-            # FIX: при ошибке "database disk image is malformed" не возвращаем
-            # повреждённое соединение в пул — создаём новое
             if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
                 log.error("Detected corrupted DB connection, replacing: %s", e)
                 try:
@@ -101,7 +90,6 @@ class DatabasePool:
                 raise
             raise
         finally:
-            # Возвращаем только если не было замены выше
             try:
                 if temp:
                     conn.close()
@@ -127,15 +115,32 @@ class DatabasePool:
                 pass
 
     def migrate(self):
-        with self.connection() as conn:
-            cur = conn.cursor()
-            cur.execute("PRAGMA user_version")
-            current = cur.fetchone()[0]
+        conn = self.new_connection()
+        try:
+            current = conn.execute("PRAGMA user_version").fetchone()[0]
 
             for i in range(current, len(self._migrations)):
                 self._migrations[i](conn)
                 conn.execute(f"PRAGMA user_version = {i + 1}")
-                conn.commit()
+
+            self._ensure_indexes(conn)
+            conn.commit()
+        finally:
+            conn.close()
+            
+    def _ensure_indexes(self, conn: sqlite3.Connection):
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at "
+            "ON vault_entries(created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at "
+            "ON vault_entries(updated_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_vault_entries_tags "
+            "ON vault_entries(tags)"
+        )
 
     def _migration_1(self, conn: sqlite3.Connection):
         cur = conn.cursor()
@@ -195,10 +200,6 @@ class DatabasePool:
             expires_at TIMESTAMP
         );
         """)
-
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_created_at ON vault_entries (created_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_updated_at ON vault_entries (updated_at);")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_vault_entries_tags ON vault_entries (tags);")
 
         conn.commit()
 

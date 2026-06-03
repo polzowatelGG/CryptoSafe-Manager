@@ -45,30 +45,29 @@ class PanicMode:
         self.response_handlers.append(handler)
 
     def activate(self, method: str = "hotkey"):
-        """Activate panic mode — idempotent, logs to audit."""
+        import traceback
+        print("[DEBUG] Panic activate started")
         with self._lock:
             if self.activated:
+                print("[DEBUG] Already activated, exit")
                 return
             self.activated = True
-
-        # Log panic activation to audit BEFORE memory wiping destroys contexts if needed,
-        # but safely enough not to block execution.
+        print("[DEBUG] Logging panic event")
         self._log_panic_event(method)
-
-        # Execute all response handlers regardless of individual errors
-        for handler in self.response_handlers:
+        print("[DEBUG] Executing handlers")
+        for i, handler in enumerate(self.response_handlers):
+            print(f"[DEBUG] Running handler {i}: {handler.__name__}")
             try:
                 handler()
+                print(f"[DEBUG] Handler {handler.__name__} OK")
             except Exception as e:
-                # Используем sys.stderr, так как логирование/принты могут быть подавлены
+                traceback.print_exc()
                 sys.stderr.write(f"[PanicMode] Handler {handler.__name__} failed: {e}\n")
-
-        # Execute stealth actions if configured
         if self.config.get('stealth_mode', False):
             self._execute_stealth_actions()
-
         with self._lock:
             self.activated = False
+        print("[DEBUG] Panic activate finished")
 
     def _clear_clipboard(self):
         """Clear clipboard contents completely using service or native fallback."""
@@ -112,28 +111,10 @@ class PanicMode:
                 pass
 
     def _close_windows(self):
-        """Force the UI into locked state and hide windows safely across threads."""
         if self.main_window:
             try:
-                from PyQt6.QtCore import QMetaObject, Qt
-                
-                # 1. Сначала жестко переводим само окно в режим блокировки (вызываем форму логина)
-                if hasattr(self.main_window, 'show_login_screen'):
-                    QMetaObject.invokeMethod(
-                        self.main_window, "show_login_screen",
-                        Qt.ConnectionType.QueuedConnection
-                    )
-                elif hasattr(self.main_window, 'lock_interface'):
-                    QMetaObject.invokeMethod(
-                        self.main_window, "lock_interface",
-                        Qt.ConnectionType.QueuedConnection
-                    )
-
-                # 2. Скрываем основную оболочку
-                QMetaObject.invokeMethod(
-                    self.main_window, "hide",
-                    Qt.ConnectionType.QueuedConnection
-                )
+                # Просто скрываем окно, не вызывая несуществующих методов
+                self.main_window.hide()
             except Exception:
                 pass
 

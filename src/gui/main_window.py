@@ -153,7 +153,7 @@ class MainWindow(QMainWindow):
         self._start_clipboard_timer()
 
         # Хоткей паники
-        self._panic_shortcut = QShortcut(QKeySequence("Ctrl+Shift+Q"), self)
+        self._panic_shortcut = QShortcut(QKeySequence("Ctrl+Shift+1"), self)
         self._panic_shortcut.activated.connect(self._on_panic_activate)
 
         events.subscribe("UserLoggedIn",       self._on_user_logged_in)
@@ -455,7 +455,7 @@ class MainWindow(QMainWindow):
         security_menu.addAction(preview_action)
 
         security_menu.addSeparator()
-        panic_action = QAction("🚨 Активировать панику (Ctrl+Shift+Q)", self)
+        panic_action = QAction("🚨 Активировать панику (Ctrl+Shift+1)", self)
         panic_action.triggered.connect(self._on_panic_activate)
         security_menu.addAction(panic_action)
 
@@ -1356,19 +1356,26 @@ class MainWindow(QMainWindow):
         config = self.config or getattr(self, "_config", None)
         if not config:
             return
-        # обновляем таймаут автоблокировки
+
+        # Принудительно перечитываем настройки из конфига (который уже обновлён)
         new_timeout = config.get_preference("inactivity_timeout") or 300
         self._idle_timeout = int(new_timeout)
-        self._last_activity_time = time.time()  # сброс счётчика
-        
-        # обновляем activity_monitor если есть
+
+        # Сбрасываем локальный счётчик активности
+        self._last_activity_time = time.time()
+
+        # Если используется ActivityMonitor – сбрасываем и его счётчик
         if self.activity_monitor:
             auto_lock = config.get_preference("auto_lock")
             if auto_lock is False:
-                self._idle_timeout = 999999  # фактически отключаем
+                self._idle_timeout = 999999
             self.activity_monitor.update_config({
                 "inactivity_timeout": new_timeout
             })
+            # Вызываем record_activity() чтобы сбросить внутренний last_activity
+            # Используем безопасный вызов, так как метод может называться по-разному
+            self._record_activity_monitor()
+            print(f"[DEBUG] inactivity_timeout обновлён: {self._idle_timeout}, last_activity сброшен")
 
     def _apply_settings(self):
         """Применяет сохранённые настройки к живым сервисам."""

@@ -68,6 +68,7 @@ class ActivityMonitor:
         """Обновляет конфигурацию на лету (например, при смене профиля безопасности)."""
         with self._lock:
             self.config.update(new_config)
+            self.last_activity = time.monotonic()
             # Если в конфигурации передан профиль безопасности, можно пересчитать таймаут
             security_profile = self.config.get('security_profile', 'custom')
             if security_profile == 'paranoia':
