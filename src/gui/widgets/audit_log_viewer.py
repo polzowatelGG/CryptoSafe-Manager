@@ -1,7 +1,4 @@
 # audit_log_viewer.py
-# FIX: поиск по деталям и фильтрация по Severity теперь работают корректно.
-# Проблема была в том, что поиск сравнивал text с вложенным dict без
-# приведения к строке, а severity-фильтр сравнивал с неправильным полем.
 
 import json
 from datetime import datetime
@@ -80,7 +77,6 @@ class AuditLogViewer(QWidget):
         layout.addWidget(QLabel("Тип:"))
         layout.addWidget(self.type_filter)
 
-        # FIX: severity — используем точное совпадение с полем в entry_data
         self.severity_filter = QComboBox()
         self.severity_filter.addItems(["Все", "INFO", "WARN", "ERROR", "CRITICAL"])
         self.severity_filter.currentTextChanged.connect(self._apply_filters)
@@ -204,11 +200,11 @@ class AuditLogViewer(QWidget):
             self.details_text.setPlainText(f"Ошибка загрузки: {e}")
 
     # ─────────────────────────────────────────────────────────────────
-    # Фильтрация  (FIX: исправлен поиск по details и severity)
+    # Фильтрация  
     # ─────────────────────────────────────────────────────────────────
 
     def _apply_filters(self):
-        # FIX: приводим search к нижнему регистру один раз
+        # приводим search к нижнему регистру один раз
         search = self.search_input.text().lower().strip()
         type_f = self.type_filter.currentText()
         sev_f  = self.severity_filter.currentText()
@@ -226,7 +222,6 @@ class AuditLogViewer(QWidget):
             if type_f != "Все типы" and data.get('event_type') != type_f:
                 continue
 
-            # FIX: фильтр по severity — берём из entry_data, не из отдельного поля
             if sev_f != "Все" and data.get('severity', '') != sev_f:
                 continue
 
@@ -242,7 +237,6 @@ class AuditLogViewer(QWidget):
                 except Exception:
                     pass
 
-            # FIX: полнотекстовый поиск по деталям — сериализуем details в строку
             if search:
                 # Ищем в event_type
                 event_type_str = str(data.get('event_type', '')).lower()

@@ -34,8 +34,7 @@
 ## 1. Клонирование репозитория
 
 ```bash
-git clone https://github.com/your-username/cryptosafe-manager.git
-
+git clone https://github.com/polzowatelGG/CryptoSafe-Manager/
 cd cryptosafe-manager
 ```
 

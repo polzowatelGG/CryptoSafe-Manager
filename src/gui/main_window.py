@@ -225,12 +225,20 @@ class MainWindow(QMainWindow):
                 if self.state_manager:
                     self.state_manager.unlock()
 
-                # снимаем блокировку ключей
-                if self.key_manager and hasattr(self.key_manager, "unlock"):
-                    try:
-                        self.key_manager.unlock()
-                    except Exception:
-                        pass
+                if result == QDialog.DialogCode.Accepted:
+                    if self.state_manager:
+                        self.state_manager.unlock()
+                    # key_manager.unlock() БЕЗ ПАРОЛЯ — УБРАТЬ этот блок:
+                    # if self.key_manager and hasattr(self.key_manager, "unlock"):
+                    #     try:
+                    #         self.key_manager.unlock()   # <-- падает, пароль не передан
+                    #     except Exception:
+                    #         pass
+                    self._last_activity_time = time.time()
+                    self._rebuild_tray_menu()
+                    self._update_tray_icon_state()
+                    self._load_entries()
+                    self.show_toast("🔓 Хранилище разблокировано")
 
                 # сбрасываем состояние ActivityMonitor
                 if self.activity_monitor:
@@ -320,28 +328,20 @@ class MainWindow(QMainWindow):
                 self._last_activity_time = time.time() - (self._idle_timeout - 30)
         return super().eventFilter(obj, event)
 
-    @profile_performance
+    @profile_performance  
     def _check_idle_timeout(self):
-
         if not self.state_manager:
             return
-
         if self.state_manager.is_locked():
+            self._last_activity_time = time.time()  # не накапливать idle пока заблокировано
             return
-
-        # уже открыт диалог разблокировки
         if getattr(self, "_unlock_dialog_open", False):
             return
-
-        # открыт любой модальный диалог
         if QApplication.activeModalWidget() is not None:
             return
-
-        # открыты системные диалоги выбора файла
         for widget in QApplication.topLevelWidgets():
             if isinstance(widget, QFileDialog) and widget.isVisible():
                 return
-
         if time.time() - self._last_activity_time > self._idle_timeout:
             self.lock_application()
 
@@ -353,21 +353,8 @@ class MainWindow(QMainWindow):
             self.state_manager.lock()
         if self.key_manager:
             self.key_manager.lock()
-        try:
-            if self.os_type == "Windows":
-                import ctypes
-                ctypes.windll.user32.LockWorkStation()
-            elif self.os_type == "Darwin":
-                import subprocess
-                subprocess.run([
-                    "/usr/bin/osascript", "-e",
-                    'tell application "System Events" to keystroke "q" using {control down, command down}',
-                ])
-            elif self.os_type == "Linux":
-                import subprocess
-                subprocess.run(["xdg-screensaver", "lock"])
-        except Exception as e:
-            print(f"System lock failed: {e}")
+        # УБРАТЬ весь блок try/except с os-специфичной блокировкой
+        self._last_activity_time = time.time()  # сбрасываем таймер
         self.show_toast("🔒 Безопасная блокировка выполнена", duration=3000)
 
     def _check_mouse_shake(self, current_pos):
@@ -600,7 +587,15 @@ class MainWindow(QMainWindow):
             from gui.login_dialog import LoginDialog
             dlg = LoginDialog(self.authenticator, self)
             if dlg.exec() == QDialog.DialogCode.Accepted:
+                # LoginDialog вызывает authenticator.login() который делает
+                # key_manager.unlock() и публикует UserLoggedIn —
+                # но state_manager нужно разблокировать явно
+                if self.state_manager:
+                    self.state_manager.unlock()
+                self._last_activity_time = time.time()
                 self._load_entries()
+                self._rebuild_tray_menu()
+                self._update_tray_icon_state()   
                 QTimer.singleShot(50, self._bring_to_front)
 
     def _on_tray_clear_clipboard(self):
@@ -886,7 +881,11 @@ class MainWindow(QMainWindow):
         self.status_bar.showMessage(f"{self.login_status} | {self.clipboard_status}")
         self._update_tray_icon_state()
         reason = kwargs.get("reason", "")
-        if reason not in ("manual", "panic") and self.authenticator:
+        # Добавить "timeout" и пустой reason в список исключений
+        # key_manager.lock() публикует UserLoggedOut без reason — это дубль
+        if reason in ("manual", "panic", ""):
+            return
+        if self.authenticator:
             QTimer.singleShot(200, self._show_relock_dialog)
 
     def _on_vault_unlocked(self, **kwargs):
@@ -1340,16 +1339,36 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось сменить мастер-пароль: {e}")
 
     def _show_settings(self):
-        config = getattr(self, "_config", None)
-        pool = getattr(self.entry_manager, "db", None) if self.entry_manager else None
-
+        config = self.config or getattr(self, "_config", None)
+        pool = self.db_pool or (
+            getattr(self.entry_manager, "db", None) if self.entry_manager else None
+        )
         dialog = SettingsDialog(
             config=config,
             pool=pool,
             clipboard_service=self.clipboard_service,
-            activity_monitor=getattr(self, "activity_monitor", None),
+            activity_monitor=self.activity_monitor,
         )
-        dialog.exec()
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self._apply_settings_from_config()  
+            
+    def _apply_settings_from_config(self):
+        config = self.config or getattr(self, "_config", None)
+        if not config:
+            return
+        # обновляем таймаут автоблокировки
+        new_timeout = config.get_preference("inactivity_timeout") or 300
+        self._idle_timeout = int(new_timeout)
+        self._last_activity_time = time.time()  # сброс счётчика
+        
+        # обновляем activity_monitor если есть
+        if self.activity_monitor:
+            auto_lock = config.get_preference("auto_lock")
+            if auto_lock is False:
+                self._idle_timeout = 999999  # фактически отключаем
+            self.activity_monitor.update_config({
+                "inactivity_timeout": new_timeout
+            })
 
     def _apply_settings(self):
         """Применяет сохранённые настройки к живым сервисам."""
